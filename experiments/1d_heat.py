@@ -56,7 +56,7 @@ if __name__ == "__main__":
     # ------------------ heatmap ---------------------
 
     fig, ax = plt.subplots()
-    im = ax.imshow(u,cmap="jet")
+    im = ax.imshow(u,cmap="jet",origin="lower")
     ax.set_xlabel("x")
     ax.set_ylabel("t")
     plt.colorbar(im)
