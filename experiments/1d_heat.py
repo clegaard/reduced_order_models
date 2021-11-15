@@ -5,6 +5,7 @@ from tqdm import tqdm
 
 from datasets import (
     heateq_1d_square_explict_euler_matrix,
+    heateq_1d_square_implicit_euler_matrix,
 )
 
 
@@ -20,10 +21,12 @@ if __name__ == "__main__":
     α = -0.1
 
     # ------------------ solving ------------------------
-    u, t, x = heateq_1d_square_explict_euler_matrix(
+    # u, t, x = heateq_1d_square_explict_euler_matrix(
+    #     t_start=t_start, t_end=t_end, Δt=Δt, x_start=x_start, x_end=x_end, Δx=Δx, α=α
+    # )
+    u, t, x = heateq_1d_square_implicit_euler_matrix(
         t_start=t_start, t_end=t_end, Δt=Δt, x_start=x_start, x_end=x_end, Δx=Δx, α=α
     )
-
     n_steps = t.shape[0]
 
     # =================== plotting ===================

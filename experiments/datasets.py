@@ -1,6 +1,6 @@
 import numpy as np
 from tqdm import tqdm
-import scipy
+import scipy.linalg
 
 
 def heateq_2d_square(t_start, t_end, Δt, x_start, x_end, Δx, y_start, y_end, Δy, α):
@@ -62,6 +62,31 @@ def heateq_1d_square_explict_euler(t_start, t_end, Δt, x_start, x_end, Δx, α)
     return u, t, x
 
 
+def discrete_laplacian_1d(n):
+    K = np.zeros((n, n))
+    K[0, 0:3] = [1, -2, 1]
+    K[-1, 0:3] = [1, -2, 1]
+    for i in range(1, K.shape[0] - 1):
+        K[i, i - 1 : i + 2] = [1, -2, 1]
+
+    return K
+
+
+def lu_inverse(x):
+    # p, l, u = scipy.linalg.lu(x)
+
+    # li = np.linalg.inv(l)
+    # ui = np.linalg.inv(u)
+
+    # pli = p @li
+
+    pl, u = scipy.linalg.lu(x, permute_l=True)
+    pli = np.linalg.inv(pl)
+    ui = np.linalg.inv(u)
+
+    return pli, ui
+
+
 def heateq_1d_square_explict_euler_matrix(t_start, t_end, Δt, x_start, x_end, Δx, α):
     t = np.arange(t_start, t_end, Δt)
     x = np.arange(x_start, x_end, Δx)
@@ -77,12 +102,7 @@ def heateq_1d_square_explict_euler_matrix(t_start, t_end, Δt, x_start, x_end, �
     cur = u0
 
     # construct discrete laplacian operator to evaluate second derivatives
-    K = np.zeros((x.shape[0], x.shape[0]))
-    K[0, 0:3] = [1, -2, 1]
-    K[-1, 0:3] = [1, -2, 1]
-    for i in range(1, K.shape[0] - 1):
-        K[i, i - 1 : i + 2] = [1, -2, 1]
-
+    K = discrete_laplacian_1d(x.shape[0])
     K = (K * -α * Δt) / Δx
     M = np.identity(K.shape[0]) + K
 
@@ -93,6 +113,34 @@ def heateq_1d_square_explict_euler_matrix(t_start, t_end, Δt, x_start, x_end, �
         dudxx_k = K @ cur
         # assert np.allclose(dudt, dudxx_k)
         next = M @ cur
+        u.append(next)
+        cur = next
+
+    u = np.vstack(u)
+
+    return u, t, x
+
+
+def heateq_1d_square_implicit_euler_matrix(t_start, t_end, Δt, x_start, x_end, Δx, α):
+    t = np.arange(t_start, t_end, Δt)
+    x = np.arange(x_start, x_end, Δx)
+
+    n_steps = t.shape[0]
+
+    u0 = np.zeros_like(x)
+    u0[45:55] = 1.0
+
+    u = [u0]
+    cur = u0
+
+    K = discrete_laplacian_1d(x.shape[0])
+    K = (K * -α * Δt) / Δx
+    M = np.identity(K.shape[0]) - K
+
+    li, ui = lu_inverse(M)
+
+    for _ in tqdm(range(n_steps), desc="stepping"):
+        next = ui @ li @ cur
         u.append(next)
         cur = next
 
