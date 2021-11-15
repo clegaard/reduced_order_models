@@ -1,5 +1,6 @@
 import numpy as np
 from tqdm import tqdm
+import scipy
 
 
 def heateq_2d_square(t_start, t_end, Δt, x_start, x_end, Δx, y_start, y_end, Δy, α):
@@ -24,7 +25,7 @@ def heateq_2d_square(t_start, t_end, Δt, x_start, x_end, Δx, y_start, y_end, �
         dudy = np.gradient(cur, Δy, axis=1)
         dudyy = np.gradient(dudy, axis=1)
 
-        dudt = -α*(dudxx+dudyy)*Δt
+        dudt = -α * (dudxx + dudyy) * Δt
         next = cur + dudt
         u.append(next)
         cur = next
@@ -32,3 +33,69 @@ def heateq_2d_square(t_start, t_end, Δt, x_start, x_end, Δx, y_start, y_end, �
     u = np.stack(u)
 
     return u, t, x, y
+
+
+def heateq_1d_square_explict_euler(t_start, t_end, Δt, x_start, x_end, Δx, α):
+    t = np.arange(t_start, t_end, Δt)
+    x = np.arange(x_start, x_end, Δx)
+
+    n_steps = t.shape[0]
+
+    u0 = np.zeros_like(x)
+    u0[45:55] = 1.0
+
+    # ------------------ solving ------------------------
+
+    u = [u0]
+    cur = u0
+
+    for _ in tqdm(range(n_steps), desc="stepping"):
+        dudx = np.gradient(cur, Δx)
+        dudxx = np.gradient(dudx)
+        dudt = -α * dudxx * Δt
+        next = cur + dudt
+        u.append(next)
+        cur = next
+
+    u = np.vstack(u)
+
+    return u, t, x
+
+
+def heateq_1d_square_explict_euler_matrix(t_start, t_end, Δt, x_start, x_end, Δx, α):
+    t = np.arange(t_start, t_end, Δt)
+    x = np.arange(x_start, x_end, Δx)
+
+    n_steps = t.shape[0]
+
+    u0 = np.zeros_like(x)
+    u0[45:55] = 1.0
+
+    # ------------------ solving ------------------------
+
+    u = [u0]
+    cur = u0
+
+    # construct discrete laplacian operator to evaluate second derivatives
+    K = np.zeros((x.shape[0], x.shape[0]))
+    K[0, 0:3] = [1, -2, 1]
+    K[-1, 0:3] = [1, -2, 1]
+    for i in range(1, K.shape[0] - 1):
+        K[i, i - 1 : i + 2] = [1, -2, 1]
+
+    K = (K * -α * Δt) / Δx
+    M = np.identity(K.shape[0]) + K
+
+    for _ in tqdm(range(n_steps), desc="stepping"):
+        dudx = np.gradient(cur, Δx)
+        dudxx = np.gradient(dudx)
+        dudt = -α * dudxx * Δt
+        dudxx_k = K @ cur
+        # assert np.allclose(dudt, dudxx_k)
+        next = M @ cur
+        u.append(next)
+        cur = next
+
+    u = np.vstack(u)
+
+    return u, t, x
