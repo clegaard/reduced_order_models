@@ -8,6 +8,8 @@ from datasets import (
     heateq_1d_square_implicit_euler_matrix,
 )
 
+from plotting import waterfall_1d, heatmap_1d, wireframe_1d, surface_1d
+
 
 if __name__ == "__main__":
 
@@ -21,9 +23,7 @@ if __name__ == "__main__":
     α = -0.1
 
     # ------------------ solving ------------------------
-    # u, t, x = heateq_1d_square_explict_euler_matrix(
-    #     t_start=t_start, t_end=t_end, Δt=Δt, x_start=x_start, x_end=x_end, Δx=Δx, α=α
-    # )
+
     u, t, x = heateq_1d_square_implicit_euler_matrix(
         t_start=t_start, t_end=t_end, Δt=Δt, x_start=x_start, x_end=x_end, Δx=Δx, α=α
     )
@@ -31,26 +31,10 @@ if __name__ == "__main__":
 
     # =================== plotting ===================
 
-    # ------------------ waterfall --------------------
+    # fig, ax = waterfall_1d(u, x, t)
 
-    fig = plt.figure()
-    ax = fig.add_subplot(projection="3d")
+    fig, ax = surface_1d(u, x, t)
 
-    for i in tqdm(range(n_steps), desc="plotting"):
-        Y = np.ones_like(x) * t[i]
-        Z = u[i, :]
-        ax.plot(x, Y, Z)
-
-    ax.set_xlabel("x")
-    ax.set_ylabel("t")
-    ax.set_zlabel("u(t)")
-
-    # ------------------ heatmap ---------------------
-
-    fig, ax = plt.subplots()
-    im = ax.imshow(u, cmap="jet", origin="lower")
-    ax.set_xlabel("x")
-    ax.set_ylabel("t")
-    plt.colorbar(im)
+    fig, ax = heatmap_1d(u, x, t)
 
     plt.show()
