@@ -1,15 +1,16 @@
 from datasets import heateq_2d_square
 from datasets import heateq_1d_square_implicit_euler_matrix
 from plotting import animate_2d_image, heatmap_1d, wireframe_1d
+from reduction import truncated_svd_1d, svd_1d
 from numpy.linalg import svd
 import matplotlib.pyplot as plt
 import numpy as np
 
 if __name__ == "__main__":
 
-    n_modes = 10
+    n_modes = 3
 
-    u, t, x, = heateq_1d_square_implicit_euler_matrix(
+    u, t, x, M = heateq_1d_square_implicit_euler_matrix(
         t_start=0.0,
         t_end=1.0,
         Δt=0.01,
@@ -20,13 +21,14 @@ if __name__ == "__main__":
     )
 
     U, Σ, V = svd(u, full_matrices=False)
-    u_reconstructed_full = np.dot(U * Σ, V).reshape(*u.shape)
-    u_reconstructed_truncated = np.dot(
-        U[:, :n_modes] * Σ[:n_modes], V[:n_modes, :]
-    ).reshape(*u.shape)
+    u_reconstructed_full, *_ = svd_1d(u)
+    u_reconstructed_truncated, Ut, Σt, Vt = truncated_svd_1d(u, n_modes=n_modes)
     assert (
         u_reconstructed_full.shape == u_reconstructed_truncated.shape
     ), "reconstrtion of full SVD and truncated SVD should have identical dimensions"
+
+    z = Ut.T @ u
+    # U.T @ M @ U
 
     fig, ax = heatmap_1d(u, x, t)
     ax.set_title("original")

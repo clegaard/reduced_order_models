@@ -146,4 +146,4 @@ def heateq_1d_square_implicit_euler_matrix(t_start, t_end, Δt, x_start, x_end, 
 
     u = np.vstack(u)
 
-    return u, t, x
+    return u, t, x, M
