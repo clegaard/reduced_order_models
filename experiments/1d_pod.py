@@ -8,11 +8,11 @@ import numpy as np
 
 if __name__ == "__main__":
 
-    n_modes = 3
+    n_modes = 2
 
     u, t, x, M = heateq_1d_square_implicit_euler_matrix(
         t_start=0.0,
-        t_end=1.0,
+        t_end=0.5,
         Δt=0.01,
         x_start=0.0,
         x_end=1.0,
@@ -20,14 +20,16 @@ if __name__ == "__main__":
         α=-0.5,
     )
 
-    U, Σ, V = svd(u, full_matrices=False)
-    u_reconstructed_full, *_ = svd_1d(u)
-    u_reconstructed_truncated, Ut, Σt, Vt = truncated_svd_1d(u, n_modes=n_modes)
-    assert (
-        u_reconstructed_full.shape == u_reconstructed_truncated.shape
-    ), "reconstrtion of full SVD and truncated SVD should have identical dimensions"
+    U, S, V = np.linalg.svd(u, full_matrices=False)
+    z = U.T @ u
+    u_reconstructed_full = U @ z
 
-    z = Ut.T @ u
+    assert np.allclose(u, u_reconstructed_full)
+    Ut = U[:, :n_modes]
+
+    zt = Ut.T @ u
+    u_reconstructed_truncated = Ut @ zt
+
     # U.T @ M @ U
 
     fig, ax = heatmap_1d(u, x, t)
@@ -45,6 +47,6 @@ if __name__ == "__main__":
     fig, ax = wireframe_1d(u_reconstructed_truncated, x, t)
     ax.set_title(f"reconstructed truncated, N = {n_modes}")
     fig, ax = plt.subplots()
-    ax.stem(Σ)
+    ax.stem(S)
 
     plt.show()
