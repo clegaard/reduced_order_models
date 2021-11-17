@@ -10,7 +10,7 @@ from torch.nn.init import xavier_uniform_
 
 if __name__ == "__main__":
 
-    n_train_iterations = 1000
+    n_train_iterations = 10000
     n_train_steps = 149
     device = "cuda"
 
@@ -56,10 +56,7 @@ if __name__ == "__main__":
     # =========== full system -> forward euler ===========
 
     for _ in tqdm(range(n_train_iterations), desc="training explicit"):
-        # map each snapshot x_k to an estimate of the next state x_k+1
-        # operation can be carried out in parallel for each snapshot
         u_next = u + M_explicit(u.T).T * Δt
-        # u = [x0 x1 ... xn] , u_next = [x1 x2 ... xn+1]
         loss = F.mse_loss(u_next[:, :-1], u[:, 1:])
         loss.backward()
         results["full"]["explicit"]["losses"].append(loss.item())
