@@ -227,6 +227,10 @@ if __name__ == "__main__":
     u = u.detach().cpu().numpy()
     u_reconstructed_full = u_reconstructed_full.detach().cpu().numpy()
     u_reconstructed_truncated = u_reconstructed_truncated.detach().cpu().numpy()
+    M_explicit = M_explicit.weight.detach().cpu().numpy()
+    M_implicit = M_implicit.weight.detach().cpu().numpy()
+    M_reduced_explicit = M_reduced_explicit.weight.detach().cpu().numpy()
+    M_reduced_implicit = M_reduced_implicit.weight.detach().cpu().numpy()
 
     fig, ax = plt.subplots()
     ax.set_title("Losses explicit")
@@ -273,5 +277,25 @@ if __name__ == "__main__":
     fig.canvas.manager.set_window_title(
         f"predicted reduced implicit sim, N = {n_modes}"
     )
+
+    fig, ax = plt.subplots()
+    ax.imshow(M)
+    fig.canvas.manager.set_window_title(f"ground truth M full implicit")
+
+    fig, ax = plt.subplots()
+    ax.imshow(M_explicit)
+    fig.canvas.manager.set_window_title(f"estimated M full explicit")
+
+    fig, ax = plt.subplots()
+    ax.imshow(M_implicit)
+    fig.canvas.manager.set_window_title(f"estimated M full implicit")
+
+    fig, ax = plt.subplots()
+    ax.imshow(M_reduced_explicit)
+    fig.canvas.manager.set_window_title(f"estimated M reduced explicit")
+
+    fig, ax = plt.subplots()
+    ax.imshow(M_reduced_implicit)
+    fig.canvas.manager.set_window_title(f"estimated M reduced implicit")
 
     plt.show()
