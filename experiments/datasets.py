@@ -65,7 +65,7 @@ def heateq_1d_square_explict_euler(t_start, t_end, Δt, x_start, x_end, Δx, α)
 def discrete_laplacian_1d(n):
     K = np.zeros((n, n))
     K[0, 0:3] = [1, -2, 1]
-    K[-1, 0:3] = [1, -2, 1]
+    K[-1, -3:] = [1, -2, 1]
     for i in range(1, K.shape[0] - 1):
         K[i, i - 1 : i + 2] = [1, -2, 1]
 
@@ -73,13 +73,6 @@ def discrete_laplacian_1d(n):
 
 
 def lu_inverse(x):
-    # p, l, u = scipy.linalg.lu(x)
-
-    # li = np.linalg.inv(l)
-    # ui = np.linalg.inv(u)
-
-    # pli = p @li
-
     pl, u = scipy.linalg.lu(x, permute_l=True)
     pli = np.linalg.inv(pl)
     ui = np.linalg.inv(u)
