@@ -1,5 +1,3 @@
-from typing_extensions import Required
-from numpy import dtype
 import torch
 from tqdm import tqdm
 import torch.nn.functional as F
@@ -12,6 +10,7 @@ if __name__ == "__main__":
 
     n_train_iterations = 10000
     n_train_steps = 149
+    n_modes = 10
     device = "cuda"
 
     Δt = 0.01
@@ -38,20 +37,37 @@ if __name__ == "__main__":
     t = t[: n_train_steps + 1]
     u0 = u[:, 0].to(device)
 
+    # ================== Dimensionality Reduction ======================
+    U, S, V = torch.linalg.svd(u, full_matrices=False)
+
+    z = U.T @ u
+    u_reconstructed_full = U @ z
+    Ut = U[:, :n_modes]
+    zt = Ut.T @ u
+    u_reconstructed_truncated = Ut @ zt
+
+    # ========================== Training =============================
+
     results = {
         "full": {
             "explicit": {"losses": [], "sim": None, "step": None, "opt": None},
             "implicit": {"losses": [], "sim": None, "step": None, "opt": None},
         },
-        "reduced": {"explicit": None, "implicit": None},
+        "reduced": {"explicit": {"losses": [], "sim": None, "step": None, "opt": None}},
     }
 
     M_explicit = torch.nn.Linear(M.shape[0], M.shape[0], bias=False).to(device)
     M_implicit = torch.nn.Linear(M.shape[0], M.shape[0], bias=False).to(device)
+    M_reduced_explicit = torch.nn.Linear(n_modes, n_modes, bias=False).to(device)
+
     xavier_uniform_(M_explicit.weight)
     xavier_uniform_(M_implicit.weight)
+    xavier_uniform_(M_reduced_explicit.weight)
     results["full"]["explicit"]["opt"] = torch.optim.Adam(M_explicit.parameters())
     results["full"]["implicit"]["opt"] = torch.optim.Adam(M_implicit.parameters())
+    results["reduced"]["explicit"]["opt"] = torch.optim.Adam(
+        M_reduced_explicit.parameters()
+    )
 
     # =========== full system -> forward euler ===========
 
@@ -69,7 +85,7 @@ if __name__ == "__main__":
     cur = u[:, :1]
     next = None
     us = [cur]
-    for _ in tqdm(t):
+    for _ in t:
         next = cur + M_explicit(cur.T).T * Δt
         us.append(next)
         cur = next
@@ -107,7 +123,7 @@ if __name__ == "__main__":
     cur = u[:, :1]
     next = None
     us = [cur]
-    for _ in tqdm(t):
+    for _ in t:
         next = M_implicit_inv @ cur
         us.append(next)
         cur = next
@@ -125,35 +141,85 @@ if __name__ == "__main__":
         results["full"]["implicit"]["sim"].detach().cpu().numpy()
     )
 
+    # =========== reduced system -> forward euler ===========
+
+    for _ in tqdm(range(n_train_iterations), desc="training reduced explicit"):
+        z_next = zt + M_reduced_explicit(zt.T).T * Δt
+        loss = F.mse_loss(z_next[:, :-1], zt[:, 1:])
+        loss.backward()
+        results["reduced"]["explicit"]["losses"].append(loss.item())
+        results["reduced"]["explicit"]["opt"].step()
+        results["reduced"]["explicit"]["opt"].zero_grad()
+
+    z_step = torch.concat((zt[:, :1], z_next[:, :-1]), dim=1)
+    results["reduced"]["explicit"]["step"] = Ut @ z_step
+    cur = zt[:, :1]
+    next = None
+    zs = [cur]
+    for _ in t:
+        next = cur + M_reduced_explicit(cur.T).T * Δt
+        zs.append(next)
+        cur = next
+
+    zs = torch.concat(zs, dim=1)
+    results["reduced"]["explicit"]["sim"] = Ut @ zs
+
+    assert (
+        results["reduced"]["explicit"]["step"].shape
+        == results["reduced"]["explicit"]["sim"].shape
+    )
+
+    results["reduced"]["explicit"]["step"] = (
+        results["reduced"]["explicit"]["step"].detach().cpu().numpy()
+    )
+    results["reduced"]["explicit"]["sim"] = (
+        results["reduced"]["explicit"]["sim"].detach().cpu().numpy()
+    )
+
     # ================================ plotting ================================
 
     u = u.detach().cpu().numpy()
+    u_reconstructed_full = u_reconstructed_full.detach().cpu().numpy()
+    u_reconstructed_truncated = u_reconstructed_truncated.detach().cpu().numpy()
 
     fig, ax = plt.subplots()
     ax.set_title("Losses explicit")
-    ax.plot(results["full"]["explicit"]["losses"])
+    ax.plot(results["full"]["explicit"]["losses"], label="full explicit")
+    ax.plot(results["full"]["implicit"]["losses"], label="full implicit")
+    ax.plot(results["reduced"]["explicit"]["losses"], label="full reduced")
     ax.set_xlabel("training step")
     ax.set_ylabel("loss, single step")
-
-    fig, ax = plt.subplots()
-    ax.plot(results["full"]["implicit"]["losses"])
-    ax.set_title("Losses implicit")
-    ax.set_xlabel("training step")
-    ax.set_ylabel("loss, single step")
+    ax.legend()
 
     fig, ax = heatmap_1d(u.T, x, t)
-    ax.set_title("ground truth")
+    fig.canvas.manager.set_window_title(f"ground truth")
 
-    fig, ax = heatmap_1d(results["full"]["explicit"]["step"].T, x, t)
-    ax.set_title("predicted explicit step")
+    fig, ax = heatmap_1d(u_reconstructed_full.T, x, t)
+    fig.canvas.manager.set_window_title(f"ground truth reconstructed full")
+
+    fig, ax = heatmap_1d(u_reconstructed_truncated.T, x, t)
+    fig.canvas.manager.set_window_title(
+        f"ground truth reconstructed truncated, N = {n_modes}"
+    )
+
+    # fig, ax = heatmap_1d(results["full"]["explicit"]["step"].T, x, t)
+    # fig.canvas.manager.set_window_title(f"predicted explicit step")
 
     fig, ax = heatmap_1d(results["full"]["explicit"]["sim"].T, x, t)
-    ax.set_title("predicted explicit sim")
+    fig.canvas.manager.set_window_title(f"predicted explicit sim")
 
-    fig, ax = heatmap_1d(results["full"]["implicit"]["step"].T, x, t)
-    ax.set_title("predicted implicit step")
+    # fig, ax = heatmap_1d(results["full"]["implicit"]["step"].T, x, t)
+    # fig.canvas.manager.set_window_title(f"predicted implicit step")
 
     fig, ax = heatmap_1d(results["full"]["implicit"]["sim"].T, x, t)
-    ax.set_title("predicted implicit sim")
+    fig.canvas.manager.set_window_title(f"predicted implicit sim")
+
+    # fig, ax = heatmap_1d(results["reduced"]["explicit"]["step"].T, x, t)
+    # fig.canvas.manager.set_window_title(f"predicted reduced explicit step")
+
+    fig, ax = heatmap_1d(results["reduced"]["explicit"]["sim"].T, x, t)
+    fig.canvas.manager.set_window_title(
+        f"predicted reduced explicit sim, N = {n_modes}"
+    )
 
     plt.show()
