@@ -8,18 +8,19 @@ from torch.nn.init import xavier_uniform_
 
 if __name__ == "__main__":
 
-    n_train_iterations = 5000
-    n_train_steps = 149
+    n_train_iterations = 1000
     n_modes = 10
     device = "cuda"
+    dtype = torch.float64
 
     Δt = 0.01
     α = 0.005
     Δx = 0.01
-    γ = α * Δt / Δx ** 2
+    lr = 1e-3
+    γ = 0.01  # α * Δt / Δx ** 2
     u, t, x, M = heateq_1d_square_implicit_euler_matrix(
         t_start=0.0,
-        t_end=1.49,
+        t_end=2.0,
         Δt=Δt,
         x_start=0.0,
         x_end=1.0,
@@ -27,17 +28,12 @@ if __name__ == "__main__":
         α=α,
     )
 
-    assert n_train_steps <= len(
-        t
-    ), f"training data must have a length greater or equal than the number of training steps, actual is {len(t)} and {n_train_steps}"
-
     # TODO
     u = u.T
     # end TODO
 
-    u = torch.tensor(u, dtype=torch.float32).to(device)
-    u = u[:, : n_train_steps + 1]
-    t = t[: n_train_steps + 1]
+    u = torch.tensor(u, dtype=dtype).to(device)
+
     u0 = u[:, 0].to(device)
 
     # ================== Dimensionality Reduction ======================
@@ -62,28 +58,40 @@ if __name__ == "__main__":
         },
     }
 
-    M_explicit = torch.nn.Linear(M.shape[0], M.shape[0], bias=False).to(device)
-    K_implicit = torch.nn.Linear(M.shape[0], M.shape[0], bias=False).to(device)
-    M_reduced_explicit = torch.nn.Linear(n_modes, n_modes, bias=False).to(device)
-    M_reduced_implicit = torch.nn.Linear(n_modes, n_modes, bias=False).to(device)
+    K_explicit = torch.nn.Linear(
+        M.shape[0], M.shape[0], bias=False, dtype=dtype, device=device
+    )
+    K_implicit = torch.nn.Linear(
+        M.shape[0], M.shape[0], bias=False, dtype=dtype, device=device
+    )
+    M_reduced_explicit = torch.nn.Linear(
+        n_modes, n_modes, bias=False, dtype=dtype, device=device
+    )
+    M_reduced_implicit = torch.nn.Linear(
+        n_modes, n_modes, bias=False, dtype=dtype, device=device
+    )
 
-    xavier_uniform_(M_explicit.weight)
+    xavier_uniform_(K_explicit.weight)
     xavier_uniform_(K_implicit.weight)
     xavier_uniform_(M_reduced_explicit.weight)
     xavier_uniform_(M_reduced_implicit.weight)
-    results["full"]["explicit"]["opt"] = torch.optim.Adam(M_explicit.parameters())
-    results["full"]["implicit"]["opt"] = torch.optim.Adam(K_implicit.parameters())
+    results["full"]["explicit"]["opt"] = torch.optim.Adam(
+        K_explicit.parameters(), lr=lr
+    )
+    results["full"]["implicit"]["opt"] = torch.optim.Adam(
+        K_implicit.parameters(), lr=lr
+    )
     results["reduced"]["explicit"]["opt"] = torch.optim.Adam(
-        M_reduced_explicit.parameters()
+        M_reduced_explicit.parameters(), lr=lr
     )
     results["reduced"]["implicit"]["opt"] = torch.optim.Adam(
-        M_reduced_implicit.parameters()
+        M_reduced_implicit.parameters(), lr=lr
     )
 
     # =========== full system -> forward euler ===========
 
     for _ in tqdm(range(n_train_iterations), desc="training explicit"):
-        u_next = u + M_explicit(u.T).T * Δt
+        u_next = u + K_explicit(u.T).T * γ
         loss = F.mse_loss(u_next[:, :-1], u[:, 1:])
         loss.backward()
         results["full"]["explicit"]["losses"].append(loss.item())
@@ -97,7 +105,7 @@ if __name__ == "__main__":
     next = None
     us = [cur]
     for _ in t:
-        next = cur + M_explicit(cur.T).T * Δt
+        next = cur + K_explicit(cur.T).T * γ
         us.append(next)
         cur = next
     results["full"]["explicit"]["sim"] = torch.concat(us, dim=1)
@@ -117,7 +125,7 @@ if __name__ == "__main__":
     # =========== full system -> backward euler ===========
 
     for _ in tqdm(range(n_train_iterations), desc="training implicit"):
-        u_prev = u - K_implicit(u.T).T * Δt
+        u_prev = u - K_implicit(u.T).T * γ
         loss = F.mse_loss(u_prev[:, 1:], u[:, :-1])
         loss.backward()
         results["full"]["implicit"]["losses"].append(loss.item())
@@ -129,8 +137,9 @@ if __name__ == "__main__":
     )
 
     M_implicit_inv = torch.linalg.inv(
-        torch.eye(K_implicit.weight.shape[0]).to(device) - Δt * K_implicit.weight
+        torch.eye(K_implicit.weight.shape[0]).to(device) - K_implicit.weight * γ
     )
+    cond = torch.linalg.cond(M_implicit_inv)
     cur = u[:, :1]
     next = None
     us = [cur]
@@ -155,7 +164,7 @@ if __name__ == "__main__":
     # =========== reduced system -> forward euler ===========
 
     for _ in tqdm(range(n_train_iterations), desc="training reduced explicit"):
-        z_next = zt + M_reduced_explicit(zt.T).T * Δt
+        z_next = zt + M_reduced_explicit(zt.T).T * γ
         loss = F.mse_loss(z_next[:, :-1], zt[:, 1:])
         loss.backward()
         results["reduced"]["explicit"]["losses"].append(loss.item())
@@ -168,7 +177,7 @@ if __name__ == "__main__":
     next = None
     zs = [cur]
     for _ in t:
-        next = cur + M_reduced_explicit(cur.T).T * Δt
+        next = cur + M_reduced_explicit(cur.T).T * γ
         zs.append(next)
         cur = next
 
@@ -189,7 +198,7 @@ if __name__ == "__main__":
 
     # ============= Reduced system -> Backward euler =================
     for _ in tqdm(range(n_train_iterations), desc="training reduced implicit"):
-        z_prev = zt + M_reduced_implicit(zt.T).T * Δt
+        z_prev = zt - M_reduced_implicit(zt.T).T * γ
         loss = F.mse_loss(z_prev[:, 1:], zt[:, :-1])
         loss.backward()
         results["reduced"]["implicit"]["losses"].append(loss.item())
@@ -200,8 +209,8 @@ if __name__ == "__main__":
     results["reduced"]["implicit"]["step"] = Ut @ zs_step
 
     M_reduced_implicit_inv = torch.linalg.inv(
-        Δt * M_reduced_implicit.weight
-        + torch.eye(M_reduced_implicit.weight.shape[0]).to(device)
+        torch.eye(M_reduced_implicit.weight.shape[0]).to(device)
+        - γ * M_reduced_implicit.weight
     )
     cur = zt[:, :1]
     next = None
@@ -230,7 +239,6 @@ if __name__ == "__main__":
     u = u.detach().cpu().numpy()
     u_reconstructed_full = u_reconstructed_full.detach().cpu().numpy()
     u_reconstructed_truncated = u_reconstructed_truncated.detach().cpu().numpy()
-    M_explicit = M_explicit.weight.detach().cpu().numpy()
     K_implicit = K_implicit.weight.detach().cpu().numpy()
     M_reduced_explicit = M_reduced_explicit.weight.detach().cpu().numpy()
     M_reduced_implicit = M_reduced_implicit.weight.detach().cpu().numpy()
@@ -243,62 +251,29 @@ if __name__ == "__main__":
     ax.plot(results["reduced"]["implicit"]["losses"], label="reduced implicit")
     ax.set_xlabel("training step")
     ax.set_ylabel("loss, single step")
+    ax.set_yscale("log")
     ax.legend()
 
-    fig, ax = heatmap_1d(u.T, x, t)
-    fig.canvas.manager.set_window_title(f"ground truth")
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, sharex=True, sharey=True)
+    ax1.imshow(u, cmap="jet", origin="lower")
+    ax1.set_title("true")
+    ax2.imshow(results["full"]["explicit"]["sim"], cmap="jet", origin="lower")
+    ax2.set_title("explicit")
+    im = ax3.imshow(results["full"]["implicit"]["sim"], cmap="jet", origin="lower")
+    ax3.set_title("implicit ")
+    ax3.set_xlabel("x")
+    ax3.set_ylabel("t")
+    # plt.colorbar(im)
 
-    fig, ax = heatmap_1d(u_reconstructed_full.T, x, t)
-    fig.canvas.manager.set_window_title(f"ground truth reconstructed full")
-
-    fig, ax = heatmap_1d(u_reconstructed_truncated.T, x, t)
-    fig.canvas.manager.set_window_title(
-        f"ground truth reconstructed truncated, N = {n_modes}"
-    )
-
-    # fig, ax = heatmap_1d(results["full"]["explicit"]["step"].T, x, t)
-    # fig.canvas.manager.set_window_title(f"predicted explicit step")
-
-    fig, ax = heatmap_1d(results["full"]["explicit"]["sim"].T, x, t)
-    fig.canvas.manager.set_window_title(f"predicted explicit sim")
-
-    # fig, ax = heatmap_1d(results["full"]["implicit"]["step"].T, x, t)
-    # fig.canvas.manager.set_window_title(f"predicted implicit step")
-
-    fig, ax = heatmap_1d(results["full"]["implicit"]["sim"].T, x, t)
-    fig.canvas.manager.set_window_title(f"predicted implicit sim")
-
-    # fig, ax = heatmap_1d(results["reduced"]["explicit"]["step"].T, x, t)
-    # fig.canvas.manager.set_window_title(f"predicted reduced explicit step")
-
-    # fig, ax = heatmap_1d(results["reduced"]["explicit"]["sim"].T, x, t)
-    # fig.canvas.manager.set_window_title(
-    #     f"predicted reduced explicit sim, N = {n_modes}"
-    # )
-
-    # fig, ax = heatmap_1d(results["reduced"]["implicit"]["sim"].T, x, t)
-    # fig.canvas.manager.set_window_title(
-    #     f"predicted reduced implicit sim, N = {n_modes}"
-    # )
-
-    # fig, ax = plt.subplots()
-    # ax.imshow(M)
-    # fig.canvas.manager.set_window_title(f"ground truth M full implicit")
-
-    # fig, ax = plt.subplots()
-    # ax.imshow(M_explicit)
-    # fig.canvas.manager.set_window_title(f"estimated M full explicit")
-
-    # fig, ax = plt.subplots()
-    # ax.imshow(K_implicit)
-    # fig.canvas.manager.set_window_title(f"estimated M full implicit")
-
-    # fig, ax = plt.subplots()
-    # ax.imshow(M_reduced_explicit)
-    # fig.canvas.manager.set_window_title(f"estimated M reduced explicit")
-
-    # fig, ax = plt.subplots()
-    # ax.imshow(M_reduced_implicit)
-    # fig.canvas.manager.set_window_title(f"estimated M reduced implicit")
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, sharex=True, sharey=True)
+    ax1.imshow(u_reconstructed_truncated, cmap="jet", origin="lower")
+    ax1.set_title(f"true, reduced N={n_modes}")
+    ax2.imshow(results["reduced"]["explicit"]["sim"], cmap="jet", origin="lower")
+    ax2.set_title("explicit")
+    im = ax3.imshow(results["reduced"]["implicit"]["sim"], cmap="jet", origin="lower")
+    ax3.set_title("implicit")
+    ax3.set_xlabel("x")
+    ax3.set_ylabel("t")
+    # plt.colorbar(im)
 
     plt.show()
