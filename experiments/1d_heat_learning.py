@@ -8,12 +8,13 @@ from torch.nn.init import xavier_uniform_
 
 if __name__ == "__main__":
 
-    n_train_iterations = 30000
+    n_train_iterations = 5000
     n_train_steps = 149
     n_modes = 10
     device = "cuda"
 
     Δt = 0.01
+    α = 0.5
     u, t, x, M = heateq_1d_square_implicit_euler_matrix(
         t_start=0.0,
         t_end=1.49,
@@ -21,7 +22,7 @@ if __name__ == "__main__":
         x_start=0.0,
         x_end=1.0,
         Δx=0.01,
-        α=-0.5,
+        α=α,
     )
 
     assert n_train_steps <= len(
