@@ -14,7 +14,7 @@ if __name__ == "__main__":
     device = "cuda"
 
     Δt = 0.01
-    α = 0.5
+    α = 0.005
     u, t, x, M = heateq_1d_square_implicit_euler_matrix(
         t_start=0.0,
         t_end=1.49,

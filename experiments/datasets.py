@@ -127,7 +127,7 @@ def heateq_1d_square_implicit_euler_matrix(t_start, t_end, Δt, x_start, x_end, 
     cur = u0
 
     K = discrete_laplacian_1d(x.shape[0])
-    γ = α * Δt / Δx
+    γ = α * Δt / Δx ** 2
     M = np.identity(K.shape[0]) - K * γ
 
     li, ui = lu_inverse(M)
