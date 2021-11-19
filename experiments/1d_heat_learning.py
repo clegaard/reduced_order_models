@@ -15,13 +15,15 @@ if __name__ == "__main__":
 
     Δt = 0.01
     α = 0.005
+    Δx = 0.01
+    γ = α * Δt / Δx ** 2
     u, t, x, M = heateq_1d_square_implicit_euler_matrix(
         t_start=0.0,
         t_end=1.49,
         Δt=Δt,
         x_start=0.0,
         x_end=1.0,
-        Δx=0.01,
+        Δx=Δx,
         α=α,
     )
 
@@ -61,16 +63,16 @@ if __name__ == "__main__":
     }
 
     M_explicit = torch.nn.Linear(M.shape[0], M.shape[0], bias=False).to(device)
-    M_implicit = torch.nn.Linear(M.shape[0], M.shape[0], bias=False).to(device)
+    K_implicit = torch.nn.Linear(M.shape[0], M.shape[0], bias=False).to(device)
     M_reduced_explicit = torch.nn.Linear(n_modes, n_modes, bias=False).to(device)
     M_reduced_implicit = torch.nn.Linear(n_modes, n_modes, bias=False).to(device)
 
     xavier_uniform_(M_explicit.weight)
-    xavier_uniform_(M_implicit.weight)
+    xavier_uniform_(K_implicit.weight)
     xavier_uniform_(M_reduced_explicit.weight)
     xavier_uniform_(M_reduced_implicit.weight)
     results["full"]["explicit"]["opt"] = torch.optim.Adam(M_explicit.parameters())
-    results["full"]["implicit"]["opt"] = torch.optim.Adam(M_implicit.parameters())
+    results["full"]["implicit"]["opt"] = torch.optim.Adam(K_implicit.parameters())
     results["reduced"]["explicit"]["opt"] = torch.optim.Adam(
         M_reduced_explicit.parameters()
     )
@@ -115,7 +117,7 @@ if __name__ == "__main__":
     # =========== full system -> backward euler ===========
 
     for _ in tqdm(range(n_train_iterations), desc="training implicit"):
-        u_prev = u + M_implicit(u.T).T * Δt
+        u_prev = u - K_implicit(u.T).T * Δt
         loss = F.mse_loss(u_prev[:, 1:], u[:, :-1])
         loss.backward()
         results["full"]["implicit"]["losses"].append(loss.item())
@@ -127,7 +129,7 @@ if __name__ == "__main__":
     )
 
     M_implicit_inv = torch.linalg.inv(
-        Δt * M_implicit.weight + torch.eye(M_implicit.weight.shape[0]).to(device)
+        torch.eye(K_implicit.weight.shape[0]).to(device) - Δt * K_implicit.weight
     )
     cur = u[:, :1]
     next = None
@@ -229,7 +231,7 @@ if __name__ == "__main__":
     u_reconstructed_full = u_reconstructed_full.detach().cpu().numpy()
     u_reconstructed_truncated = u_reconstructed_truncated.detach().cpu().numpy()
     M_explicit = M_explicit.weight.detach().cpu().numpy()
-    M_implicit = M_implicit.weight.detach().cpu().numpy()
+    K_implicit = K_implicit.weight.detach().cpu().numpy()
     M_reduced_explicit = M_reduced_explicit.weight.detach().cpu().numpy()
     M_reduced_implicit = M_reduced_implicit.weight.detach().cpu().numpy()
 
@@ -269,34 +271,34 @@ if __name__ == "__main__":
     # fig, ax = heatmap_1d(results["reduced"]["explicit"]["step"].T, x, t)
     # fig.canvas.manager.set_window_title(f"predicted reduced explicit step")
 
-    fig, ax = heatmap_1d(results["reduced"]["explicit"]["sim"].T, x, t)
-    fig.canvas.manager.set_window_title(
-        f"predicted reduced explicit sim, N = {n_modes}"
-    )
+    # fig, ax = heatmap_1d(results["reduced"]["explicit"]["sim"].T, x, t)
+    # fig.canvas.manager.set_window_title(
+    #     f"predicted reduced explicit sim, N = {n_modes}"
+    # )
 
-    fig, ax = heatmap_1d(results["reduced"]["implicit"]["sim"].T, x, t)
-    fig.canvas.manager.set_window_title(
-        f"predicted reduced implicit sim, N = {n_modes}"
-    )
+    # fig, ax = heatmap_1d(results["reduced"]["implicit"]["sim"].T, x, t)
+    # fig.canvas.manager.set_window_title(
+    #     f"predicted reduced implicit sim, N = {n_modes}"
+    # )
 
-    fig, ax = plt.subplots()
-    ax.imshow(M)
-    fig.canvas.manager.set_window_title(f"ground truth M full implicit")
+    # fig, ax = plt.subplots()
+    # ax.imshow(M)
+    # fig.canvas.manager.set_window_title(f"ground truth M full implicit")
 
-    fig, ax = plt.subplots()
-    ax.imshow(M_explicit)
-    fig.canvas.manager.set_window_title(f"estimated M full explicit")
+    # fig, ax = plt.subplots()
+    # ax.imshow(M_explicit)
+    # fig.canvas.manager.set_window_title(f"estimated M full explicit")
 
-    fig, ax = plt.subplots()
-    ax.imshow(M_implicit)
-    fig.canvas.manager.set_window_title(f"estimated M full implicit")
+    # fig, ax = plt.subplots()
+    # ax.imshow(K_implicit)
+    # fig.canvas.manager.set_window_title(f"estimated M full implicit")
 
-    fig, ax = plt.subplots()
-    ax.imshow(M_reduced_explicit)
-    fig.canvas.manager.set_window_title(f"estimated M reduced explicit")
+    # fig, ax = plt.subplots()
+    # ax.imshow(M_reduced_explicit)
+    # fig.canvas.manager.set_window_title(f"estimated M reduced explicit")
 
-    fig, ax = plt.subplots()
-    ax.imshow(M_reduced_implicit)
-    fig.canvas.manager.set_window_title(f"estimated M reduced implicit")
+    # fig, ax = plt.subplots()
+    # ax.imshow(M_reduced_implicit)
+    # fig.canvas.manager.set_window_title(f"estimated M reduced implicit")
 
     plt.show()
