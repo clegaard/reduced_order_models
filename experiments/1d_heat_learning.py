@@ -8,7 +8,7 @@ from torch.nn.init import xavier_uniform_
 
 if __name__ == "__main__":
 
-    n_train_iterations = 1000
+    n_train_iterations = 10000
     n_modes = 10
     device = "cuda"
     dtype = torch.float64
@@ -57,41 +57,32 @@ if __name__ == "__main__":
             "implicit": {"losses": [], "sim": None, "step": None, "opt": None},
         },
     }
-
-    K_explicit = torch.nn.Linear(
-        M.shape[0], M.shape[0], bias=False, dtype=dtype, device=device
+    K_explicit = torch.empty(M.shape, dtype=dtype, device=device, requires_grad=True)
+    K_implicit = torch.empty(M.shape, dtype=dtype, device=device, requires_grad=True)
+    M_reduced_explicit = torch.empty(
+        (n_modes, n_modes), dtype=dtype, device=device, requires_grad=True
     )
-    K_implicit = torch.nn.Linear(
-        M.shape[0], M.shape[0], bias=False, dtype=dtype, device=device
-    )
-    M_reduced_explicit = torch.nn.Linear(
-        n_modes, n_modes, bias=False, dtype=dtype, device=device
-    )
-    M_reduced_implicit = torch.nn.Linear(
-        n_modes, n_modes, bias=False, dtype=dtype, device=device
+    M_reduced_implicit = torch.empty(
+        (n_modes, n_modes), dtype=dtype, device=device, requires_grad=True
     )
 
-    xavier_uniform_(K_explicit.weight)
-    xavier_uniform_(K_implicit.weight)
-    xavier_uniform_(M_reduced_explicit.weight)
-    xavier_uniform_(M_reduced_implicit.weight)
-    results["full"]["explicit"]["opt"] = torch.optim.Adam(
-        K_explicit.parameters(), lr=lr
-    )
-    results["full"]["implicit"]["opt"] = torch.optim.Adam(
-        K_implicit.parameters(), lr=lr
-    )
+    xavier_uniform_(K_explicit)
+    xavier_uniform_(K_implicit)
+    xavier_uniform_(M_reduced_explicit)
+    xavier_uniform_(M_reduced_implicit)
+    results["full"]["explicit"]["opt"] = torch.optim.Adam([K_explicit], lr=lr)
+    results["full"]["implicit"]["opt"] = torch.optim.Adam([K_implicit], lr=lr)
     results["reduced"]["explicit"]["opt"] = torch.optim.Adam(
-        M_reduced_explicit.parameters(), lr=lr
+        [M_reduced_explicit], lr=lr
     )
     results["reduced"]["implicit"]["opt"] = torch.optim.Adam(
-        M_reduced_implicit.parameters(), lr=lr
+        [M_reduced_implicit], lr=lr
     )
 
     # =========== full system -> forward euler ===========
 
     for _ in tqdm(range(n_train_iterations), desc="training explicit"):
-        u_next = u + K_explicit(u.T).T * γ
+        u_next = u + K_explicit @ u * γ
         loss = F.mse_loss(u_next[:, :-1], u[:, 1:])
         loss.backward()
         results["full"]["explicit"]["losses"].append(loss.item())
@@ -105,7 +96,7 @@ if __name__ == "__main__":
     next = None
     us = [cur]
     for _ in t:
-        next = cur + K_explicit(cur.T).T * γ
+        next = cur + K_explicit @ cur * γ
         us.append(next)
         cur = next
     results["full"]["explicit"]["sim"] = torch.concat(us, dim=1)
@@ -125,7 +116,7 @@ if __name__ == "__main__":
     # =========== full system -> backward euler ===========
 
     for _ in tqdm(range(n_train_iterations), desc="training implicit"):
-        u_prev = u - K_implicit(u.T).T * γ
+        u_prev = u - K_implicit @ u * γ
         loss = F.mse_loss(u_prev[:, 1:], u[:, :-1])
         loss.backward()
         results["full"]["implicit"]["losses"].append(loss.item())
@@ -137,9 +128,8 @@ if __name__ == "__main__":
     )
 
     M_implicit_inv = torch.linalg.inv(
-        torch.eye(K_implicit.weight.shape[0]).to(device) - K_implicit.weight * γ
+        torch.eye(K_implicit.shape[0]).to(device) - K_implicit * γ
     )
-    cond = torch.linalg.cond(M_implicit_inv)
     cur = u[:, :1]
     next = None
     us = [cur]
@@ -164,7 +154,7 @@ if __name__ == "__main__":
     # =========== reduced system -> forward euler ===========
 
     for _ in tqdm(range(n_train_iterations), desc="training reduced explicit"):
-        z_next = zt + M_reduced_explicit(zt.T).T * γ
+        z_next = zt + M_reduced_explicit @ zt * γ
         loss = F.mse_loss(z_next[:, :-1], zt[:, 1:])
         loss.backward()
         results["reduced"]["explicit"]["losses"].append(loss.item())
@@ -177,7 +167,7 @@ if __name__ == "__main__":
     next = None
     zs = [cur]
     for _ in t:
-        next = cur + M_reduced_explicit(cur.T).T * γ
+        next = cur + M_reduced_explicit @ cur * γ
         zs.append(next)
         cur = next
 
@@ -198,7 +188,7 @@ if __name__ == "__main__":
 
     # ============= Reduced system -> Backward euler =================
     for _ in tqdm(range(n_train_iterations), desc="training reduced implicit"):
-        z_prev = zt - M_reduced_implicit(zt.T).T * γ
+        z_prev = zt - M_reduced_implicit @ zt * γ
         loss = F.mse_loss(z_prev[:, 1:], zt[:, :-1])
         loss.backward()
         results["reduced"]["implicit"]["losses"].append(loss.item())
@@ -209,8 +199,7 @@ if __name__ == "__main__":
     results["reduced"]["implicit"]["step"] = Ut @ zs_step
 
     M_reduced_implicit_inv = torch.linalg.inv(
-        torch.eye(M_reduced_implicit.weight.shape[0]).to(device)
-        - γ * M_reduced_implicit.weight
+        torch.eye(M_reduced_implicit.shape[0]).to(device) - γ * M_reduced_implicit
     )
     cur = zt[:, :1]
     next = None
@@ -239,9 +228,9 @@ if __name__ == "__main__":
     u = u.detach().cpu().numpy()
     u_reconstructed_full = u_reconstructed_full.detach().cpu().numpy()
     u_reconstructed_truncated = u_reconstructed_truncated.detach().cpu().numpy()
-    K_implicit = K_implicit.weight.detach().cpu().numpy()
-    M_reduced_explicit = M_reduced_explicit.weight.detach().cpu().numpy()
-    M_reduced_implicit = M_reduced_implicit.weight.detach().cpu().numpy()
+    K_implicit = K_implicit.detach().cpu().numpy()
+    M_reduced_explicit = M_reduced_explicit.detach().cpu().numpy()
+    M_reduced_implicit = M_reduced_implicit.detach().cpu().numpy()
 
     fig, ax = plt.subplots()
     ax.set_title("Losses explicit")
