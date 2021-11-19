@@ -18,7 +18,7 @@ if __name__ == "__main__":
     Δx = 0.01
     lr = 1e-3
     γ = 0.01  # α * Δt / Δx ** 2
-    u, t, x, M = heateq_1d_square_implicit_euler_matrix(
+    u, t, x, K = heateq_1d_square_implicit_euler_matrix(
         t_start=0.0,
         t_end=2.0,
         Δt=Δt,
@@ -57,8 +57,8 @@ if __name__ == "__main__":
             "implicit": {"losses": [], "sim": None, "step": None, "opt": None},
         },
     }
-    K_explicit = torch.empty(M.shape, dtype=dtype, device=device, requires_grad=True)
-    K_implicit = torch.empty(M.shape, dtype=dtype, device=device, requires_grad=True)
+    K_explicit = torch.empty(K.shape, dtype=dtype, device=device, requires_grad=True)
+    K_implicit = torch.empty(K.shape, dtype=dtype, device=device, requires_grad=True)
     M_reduced_explicit = torch.empty(
         (n_modes, n_modes), dtype=dtype, device=device, requires_grad=True
     )
@@ -229,6 +229,8 @@ if __name__ == "__main__":
     u_reconstructed_full = u_reconstructed_full.detach().cpu().numpy()
     u_reconstructed_truncated = u_reconstructed_truncated.detach().cpu().numpy()
     K_implicit = K_implicit.detach().cpu().numpy()
+    K_explicit = K_explicit.detach().cpu().numpy()
+
     M_reduced_explicit = M_reduced_explicit.detach().cpu().numpy()
     M_reduced_implicit = M_reduced_implicit.detach().cpu().numpy()
 
@@ -264,5 +266,13 @@ if __name__ == "__main__":
     ax3.set_xlabel("x")
     ax3.set_ylabel("t")
     # plt.colorbar(im)
+
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1)
+    ax1.imshow(K)
+    ax1.set_title("K true implicit")
+    ax2.imshow(K_explicit)
+    ax3.set_title("K estimated explicit")
+    ax3.imshow(K_implicit)
+    ax2.set_title("K estimated implicit")
 
     plt.show()
