@@ -8,7 +8,7 @@ from torch.nn.init import xavier_uniform_
 
 if __name__ == "__main__":
 
-    n_train_iterations = 10000
+    n_train_iterations = 30000
     n_modes = 10
     device = "cuda"
     dtype = torch.float64
@@ -17,7 +17,7 @@ if __name__ == "__main__":
     α = 0.005
     Δx = 0.01
     lr = 1e-3
-    γ = 0.01  # α * Δt / Δx ** 2
+    γ = α * Δt / Δx ** 2
     u, t, x, K = heateq_1d_square_implicit_euler_matrix(
         t_start=0.0,
         t_end=2.0,
@@ -27,6 +27,10 @@ if __name__ == "__main__":
         Δx=Δx,
         α=α,
     )
+
+    # ===================== Generate Data ==============================
+
+    #
 
     # TODO
     u = u.T
@@ -45,49 +49,34 @@ if __name__ == "__main__":
     zt = Ut.T @ u
     u_reconstructed_truncated = Ut @ zt
 
+    K_reduced = Ut.T.cpu() @ K @ Ut.cpu()
+
     # ========================== Training =============================
 
     results = {
         "full": {
-            "explicit": {"losses": [], "sim": None, "step": None, "opt": None},
-            "implicit": {"losses": [], "sim": None, "step": None, "opt": None},
+            "explicit": {"losses": [], "sim": None, "step": None},
+            "implicit": {"losses": [], "sim": None, "step": None},
         },
         "reduced": {
-            "explicit": {"losses": [], "sim": None, "step": None, "opt": None},
-            "implicit": {"losses": [], "sim": None, "step": None, "opt": None},
+            "explicit": {"losses": [], "sim": None, "step": None},
+            "implicit": {"losses": [], "sim": None, "step": None},
         },
     }
-    K_explicit = torch.empty(K.shape, dtype=dtype, device=device, requires_grad=True)
-    K_implicit = torch.empty(K.shape, dtype=dtype, device=device, requires_grad=True)
-    M_reduced_explicit = torch.empty(
-        (n_modes, n_modes), dtype=dtype, device=device, requires_grad=True
-    )
-    M_reduced_implicit = torch.empty(
-        (n_modes, n_modes), dtype=dtype, device=device, requires_grad=True
-    )
-
-    xavier_uniform_(K_explicit)
-    xavier_uniform_(K_implicit)
-    xavier_uniform_(M_reduced_explicit)
-    xavier_uniform_(M_reduced_implicit)
-    results["full"]["explicit"]["opt"] = torch.optim.Adam([K_explicit], lr=lr)
-    results["full"]["implicit"]["opt"] = torch.optim.Adam([K_implicit], lr=lr)
-    results["reduced"]["explicit"]["opt"] = torch.optim.Adam(
-        [M_reduced_explicit], lr=lr
-    )
-    results["reduced"]["implicit"]["opt"] = torch.optim.Adam(
-        [M_reduced_implicit], lr=lr
-    )
 
     # =========== full system -> forward euler ===========
+
+    K_explicit = torch.empty(K.shape, dtype=dtype, device=device, requires_grad=True)
+    xavier_uniform_(K_explicit)
+    opt = torch.optim.Adam([K_explicit], lr=lr)
 
     for _ in tqdm(range(n_train_iterations), desc="training explicit"):
         u_next = u + K_explicit @ u * γ
         loss = F.mse_loss(u_next[:, :-1], u[:, 1:])
         loss.backward()
         results["full"]["explicit"]["losses"].append(loss.item())
-        results["full"]["explicit"]["opt"].step()
-        results["full"]["explicit"]["opt"].zero_grad()
+        opt.step()
+        opt.zero_grad()
 
     results["full"]["explicit"]["step"] = torch.concat(
         (u[:, :1], u_next[:, :-1]), dim=1
@@ -112,16 +101,21 @@ if __name__ == "__main__":
     results["full"]["explicit"]["sim"] = (
         results["full"]["explicit"]["sim"].detach().cpu().numpy()
     )
+    K_explicit = K_explicit.detach().cpu().numpy()
 
     # =========== full system -> backward euler ===========
+
+    K_implicit = torch.empty(K.shape, dtype=dtype, device=device, requires_grad=True)
+    xavier_uniform_(K_implicit)
+    opt = torch.optim.Adam([K_implicit], lr=lr)
 
     for _ in tqdm(range(n_train_iterations), desc="training implicit"):
         u_prev = u - K_implicit @ u * γ
         loss = F.mse_loss(u_prev[:, 1:], u[:, :-1])
         loss.backward()
         results["full"]["implicit"]["losses"].append(loss.item())
-        results["full"]["implicit"]["opt"].step()
-        results["full"]["implicit"]["opt"].zero_grad()
+        opt.step()
+        opt.zero_grad()
 
     results["full"]["implicit"]["step"] = torch.concat(
         (u_prev[:, 1:], u[:, -1:]), dim=1
@@ -151,15 +145,23 @@ if __name__ == "__main__":
         results["full"]["implicit"]["sim"].detach().cpu().numpy()
     )
 
+    K_implicit = K_implicit.detach().cpu().numpy()
+
     # =========== reduced system -> forward euler ===========
 
+    K_reduced_explicit = torch.empty(
+        (n_modes, n_modes), dtype=dtype, device=device, requires_grad=True
+    )
+    xavier_uniform_(K_reduced_explicit)
+    opt = torch.optim.Adam([K_reduced_explicit], lr=lr)
+
     for _ in tqdm(range(n_train_iterations), desc="training reduced explicit"):
-        z_next = zt + M_reduced_explicit @ zt * γ
+        z_next = zt + K_reduced_explicit @ zt * γ
         loss = F.mse_loss(z_next[:, :-1], zt[:, 1:])
         loss.backward()
         results["reduced"]["explicit"]["losses"].append(loss.item())
-        results["reduced"]["explicit"]["opt"].step()
-        results["reduced"]["explicit"]["opt"].zero_grad()
+        opt.step()
+        opt.zero_grad()
 
     zs_step = torch.concat((zt[:, :1], z_next[:, :-1]), dim=1)
     results["reduced"]["explicit"]["step"] = Ut @ zs_step
@@ -167,7 +169,7 @@ if __name__ == "__main__":
     next = None
     zs = [cur]
     for _ in t:
-        next = cur + M_reduced_explicit @ cur * γ
+        next = cur + K_reduced_explicit @ cur * γ
         zs.append(next)
         cur = next
 
@@ -185,21 +187,29 @@ if __name__ == "__main__":
     results["reduced"]["explicit"]["sim"] = (
         results["reduced"]["explicit"]["sim"].detach().cpu().numpy()
     )
+    K_reduced_explicit = K_reduced_explicit.detach().cpu().numpy()
 
     # ============= Reduced system -> Backward euler =================
+
+    K_reduced_implicit = torch.empty(
+        (n_modes, n_modes), dtype=dtype, device=device, requires_grad=True
+    )
+    xavier_uniform_(K_reduced_implicit)
+    opt = torch.optim.Adam([K_reduced_implicit], lr=lr)
+
     for _ in tqdm(range(n_train_iterations), desc="training reduced implicit"):
-        z_prev = zt - M_reduced_implicit @ zt * γ
+        z_prev = zt - K_reduced_implicit @ zt * γ
         loss = F.mse_loss(z_prev[:, 1:], zt[:, :-1])
         loss.backward()
         results["reduced"]["implicit"]["losses"].append(loss.item())
-        results["reduced"]["implicit"]["opt"].step()
-        results["reduced"]["implicit"]["opt"].zero_grad()
+        opt.step()
+        opt.zero_grad()
 
     zs_step = torch.concat((z_prev[:, 1:], zt[:, -1:]), dim=1)
     results["reduced"]["implicit"]["step"] = Ut @ zs_step
 
     M_reduced_implicit_inv = torch.linalg.inv(
-        torch.eye(M_reduced_implicit.shape[0]).to(device) - γ * M_reduced_implicit
+        torch.eye(K_reduced_implicit.shape[0]).to(device) - γ * K_reduced_implicit
     )
     cur = zt[:, :1]
     next = None
@@ -223,16 +233,13 @@ if __name__ == "__main__":
         results["reduced"]["implicit"]["sim"].detach().cpu().numpy()
     )
 
+    K_reduced_implicit = K_reduced_implicit.detach().cpu().numpy()
+
     # ================================ plotting ================================
 
     u = u.detach().cpu().numpy()
     u_reconstructed_full = u_reconstructed_full.detach().cpu().numpy()
     u_reconstructed_truncated = u_reconstructed_truncated.detach().cpu().numpy()
-    K_implicit = K_implicit.detach().cpu().numpy()
-    K_explicit = K_explicit.detach().cpu().numpy()
-
-    M_reduced_explicit = M_reduced_explicit.detach().cpu().numpy()
-    M_reduced_implicit = M_reduced_implicit.detach().cpu().numpy()
 
     fig, ax = plt.subplots()
     ax.set_title("Losses explicit")
@@ -269,10 +276,18 @@ if __name__ == "__main__":
 
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1)
     ax1.imshow(K)
-    ax1.set_title("K true implicit")
+    ax1.set_title("K implicit")
     ax2.imshow(K_explicit)
     ax3.set_title("K estimated explicit")
     ax3.imshow(K_implicit)
     ax2.set_title("K estimated implicit")
+
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1)
+    ax1.imshow(K_reduced)
+    ax1.set_title("K reduced implicit")
+    ax2.imshow(K_reduced_explicit)
+    ax3.set_title("K reduced estimated explicit")
+    ax3.imshow(K_reduced_implicit)
+    ax2.set_title("K reduced estimated implicit")
 
     plt.show()
