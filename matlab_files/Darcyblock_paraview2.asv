@@ -27,17 +27,9 @@ rhs_coarse(maskc) = Pc.rhs;
 rhs_fine = zeros(NumNodesf,1);
 rhs_fine(maskf) = Pf.rhs;
 
-Kc = cell(9,1);
+K = zeros(NumNodesc)
 for i=1:9
-    Kc{i} = zeros(NumNodesc);
-    Kc{i}(maskc,maskc)=Pc.K{i};
-end
-
-Kf = cell(9,1);
-for i=1:9
-    Kf{i} = zeros(NumNodesf);
-    Kf{i}(maskf,maskf)=Pf.K{i};
-end
+    K{i} = 
 
 %% Postprocessing the field variables
 CCoord=GetCoord(CMesh,'All');
@@ -58,5 +50,5 @@ xlabel('x')
 ylabel('y')
 zlabel('Pressure')
 
-save('pressure.mat','Pressure_fine','Pressure_coarse','rhs_fine','rhs_coarse','FCoord','CCoord','Kc','Kf','permeability')
+save('pressure.mat','Pressure_fine','Pressure_coarse','rhs_fine','rhs_coarse','FCoord','CCoord')
 
