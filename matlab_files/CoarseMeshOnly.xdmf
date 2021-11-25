@@ -1,0 +1,28 @@
+<?xml version="1.0" ?>
+<!DOCTYPE Xdmf SYSTEM "Xdmf.dtd" []>
+<Xdmf Version="2.0" xmlns:xi="http://www.w3.org/2001/XInclude">
+<Domain Name="DomainCoarseMeshOnly">
+<Grid Name="GridCoarseMeshOnly" >
+<Topology TopologyType="Triangle" NumberOfElements="294"  >
+<DataItem Format="HDF" NumberType="int" Dimensions="294 3">
+CoarseMeshOnly.h5:/Elements
+</DataItem>
+</Topology>
+<Geometry GeometryType="XYZ">
+<DataItem Format="HDF" NumberType="float" Precision="8" Dimensions="160 3">
+CoarseMeshOnly.h5:/Nodes
+</DataItem>
+</Geometry>
+<Attribute Name="Pressure" Center="Node" AttributeType="Scalar" >
+<DataItem Format="HDF" NumberType="float" Precision="8" Dimensions="160 1000">
+CoarseMeshOnly.h5:/Pressure
+</DataItem>
+</Attribute>
+<Attribute Name="Permeability" Center="Cell" AttributeType="Scalar" >
+<DataItem Format="HDF" NumberType="float" Precision="8" Dimensions="294 1">
+CoarseMeshOnly.h5:/Permeability
+</DataItem>
+</Attribute>
+</Grid>
+</Domain>
+</Xdmf>
