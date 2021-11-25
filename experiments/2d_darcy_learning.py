@@ -18,7 +18,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 
-def train(pressures, rhs, n_iterations):
+def train(pressures, rhs, n_iterations, estimate_K_on_rhs):
 
     K = torch.randn(
         pressures.shape[0],
@@ -29,15 +29,20 @@ def train(pressures, rhs, n_iterations):
     )
     xavier_uniform_(K)
     optimizer = torch.optim.Adam([K], lr=1e-4)
-    scheduler = ReduceLROnPlateau(optimizer, mode="min")
+    scheduler = ReduceLROnPlateau(optimizer, mode="min", patience=100)
     losses = []
-    for _ in tqdm(range(n_iterations), desc="training step"):
-        pressures_estimated = torch.linalg.solve(K, rhs)
+    for iter in tqdm(range(n_iterations), desc="training step"):
+
+        if estimate_K_on_rhs:
+            pressures_estimated = K @ rhs
+        else:
+            pressures_estimated = torch.linalg.solve(K, rhs)
         loss = F.mse_loss(pressures_estimated, pressures)
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
-        scheduler.step(loss)
+        if iter > 10000:
+            scheduler.step(loss)
         losses.append(loss.item())
 
     return K, losses
@@ -57,6 +62,9 @@ def train(pressures, rhs, n_iterations):
 if __name__ == "__main__":
 
     n_training_iterations = 100000
+    estimate_K_on_rhs = (
+        True  # estimate K matrix on rhs, p = Kf, otherwise estimate on lhs and invert
+    )
 
     # =================== load data ===================
 
@@ -71,8 +79,13 @@ if __name__ == "__main__":
 
     # =================== train ===================
 
-    K, losses = train(p_coarse, rhs_coarse, n_training_iterations)
-    p_coarse_estimated = torch.linalg.solve(K, rhs_coarse).detach().cpu()
+    K, losses = train(
+        p_coarse, rhs_coarse, n_training_iterations, estimate_K_on_rhs=estimate_K_on_rhs
+    )
+    if estimate_K_on_rhs:
+        p_coarse_estimated = (K @ rhs_coarse).detach().cpu()
+    else:
+        p_coarse_estimated = torch.linalg.solve(K, rhs_coarse).detach().cpu()
     K = K.detach().cpu()
 
     # =================== plotting ===================
