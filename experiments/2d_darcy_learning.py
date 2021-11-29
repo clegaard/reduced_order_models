@@ -69,14 +69,17 @@ def train(pressures, rhs, n_iterations, estimation_mode):
     losses = []
     for iter in tqdm(range(n_iterations), desc="training step"):
 
-        if estimation_mode == "rhs":
-            pressures_estimated = K @ rhs
-        elif estimation_mode == "lhs":
-            pressures_estimated = torch.linalg.solve(K, rhs)
+        if estimation_mode == "pressure rhs":
+            loss = F.mse_loss(K @ rhs, pressures)
+
+        elif estimation_mode == "pressure lhs":
+            loss = F.mse_loss(torch.linalg.solve(K, rhs), pressures)
+
+        elif estimation_mode == "minimize f residual":
+            loss = F.mse_loss(K @ pressures, rhs)
         else:
             raise ValueError("Unrecognized estimation mode")
 
-        loss = F.mse_loss(pressures_estimated, pressures)
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
@@ -87,10 +90,74 @@ def train(pressures, rhs, n_iterations, estimation_mode):
     return K, losses
 
 
+# function Pressure = DarcyBlockSolver(P,Permeability)
+
+# Pressure = zeros(size(P.K{1},1),size(Permeability,1));
+
+# for k=1:size(Permeability,1)
+#      K=Permeability(k,1).*P.K{1};
+#      for j= 2:9
+#      K= K+Permeability(k,j).*P.K{j};
+#      end
+#     %rhs= Permeability(k,4)*P.rhs; % constant pressure gradient
+#     rhs= P.rhs; % constant inlet velocity
+#     Pressure(:,k) = K\rhs;
+# end
+
+
+# end
+
+
+def darcy_block_solver(Ks, permeabilities, rhs):
+
+    K_total = torch.zeros_like(Ks[0])
+
+    for K, p in zip(Ks, permeabilities):
+        K_total = K_total + K * p
+
+    pressures = torch.linalg.solve(K_total.to_dense(), rhs)
+    return pressures
+
+
+def scipy_sparse_to_torch_sparse(csr):
+    import numpy as np
+
+    coo = csr.tocoo()
+
+    values = coo.data
+    indices = np.vstack((coo.row, coo.col))
+    # i = torch.LongTensor(indices)
+    # v = torch.FloatTensor(values)
+
+    s = torch.sparse_coo_tensor(indices, values, torch.Size(coo.shape))
+    return s
+
+
+def find_non_outlet_idx(xy_coords):
+    m = xy_coords[:, 0].max()
+    ids = (xy_coords[:, 0] != m).nonzero()
+
+    return ids
+
+
+def add_outlet_to_solution(p_without_outlet, xy_coords):
+    m = xy_coords[:, 0].max()
+    ids = (xy_coords[:, 0] != m).nonzero()
+
+    p_with_outlet = torch.zeros(
+        xy_coarse.shape[0],
+        dtype=p_without_outlet.dtype,
+        device=p_without_outlet.device,
+    )
+    p_with_outlet[ids] = p_without_outlet
+
+    return p_with_outlet
+
+
 if __name__ == "__main__":
 
     n_training_iterations = 10000
-    estimation_mode = "rhs"
+    estimation_mode = "minimize f residual"
 
     # =================== load data ===================
 
@@ -100,21 +167,24 @@ if __name__ == "__main__":
     xy_coarse = torch.tensor(mat["CCoord"])
     rhs_coarse = torch.tensor(mat["rhs_coarse"])
     rhs_fine = torch.tensor(mat["rhs_fine"])
-    Kc = [torch.tensor(k[0]) for k in mat["Kc"]]
+    Kc = [scipy_sparse_to_torch_sparse(k[0]) for k in mat["Kc"]]
     Kf = [torch.tensor(k[0]) for k in mat["Kf"]]
 
     p_fine = torch.tensor(mat["Pressure_fine"])
     xy_fine = torch.tensor(mat["FCoord"])
 
-    # TODO
+    # ============ test TODO ===================
     # K_total = torch.zeros_like(Kc[0])
     # for k, p in zip(Kc, permeabilities):
     #     K_total += k * p
-    # plt.imshow(K_total)
+    # plt.spy(K_total.to_dense())
     # plt.show()
     # pressures_estimated = torch.linalg.solve(
-    #     K_total, rhs_coarse
-    # )  # impossible to invert since diagonal is 0
+    #     K_total.to_dense(), rhs_coarse
+    # )  # TODO it may be possible to invert without converting into dense
+
+    p_coarse = darcy_block_solver(Kc, permeabilities, rhs_coarse)
+    p_coarse_with_outlet = add_outlet_to_solution(p_coarse, xy_coarse)
 
     # =================== train ===================
 
@@ -125,14 +195,20 @@ if __name__ == "__main__":
     #     p_coarse, rhs_coarse, n_training_iterations, "lhs", permeabilities, Kc
     # )
 
-    if estimation_mode == "rhs":
+    if estimation_mode == "pressure rhs":
         p_coarse_estimated = (K @ rhs_coarse).detach().cpu()
-    elif estimation_mode == "lhs":
+    elif estimation_mode in {"pressure lhs", "minimize f residual"}:
         p_coarse_estimated = torch.linalg.solve(K, rhs_coarse).detach().cpu()
     else:
         raise ValueError()
 
+    p_coarse_estimated_with_outlet = add_outlet_to_solution(
+        p_coarse_estimated, xy_coarse
+    )
+
     K = K.detach().cpu()
+
+    # =================== Re-introduce known boundary conditions ===========
 
     # =================== plotting ===================
 
@@ -141,7 +217,7 @@ if __name__ == "__main__":
 
     x = xy_coarse[:, 0]
     y = xy_coarse[:, 1]
-    z = p_coarse[:, 0]
+    z = p_coarse_with_outlet[:]
 
     ax.plot_trisurf(
         x,
@@ -166,7 +242,8 @@ if __name__ == "__main__":
     ax = fig.add_subplot(2, 2, 3, projection="3d")
     x = xy_coarse[:, 0]
     y = xy_coarse[:, 1]
-    z = p_coarse_estimated[:, 0]
+    # z = p_coarse_estimated[:, 0]
+    z = p_coarse_estimated_with_outlet
 
     ax.plot_trisurf(
         x,
