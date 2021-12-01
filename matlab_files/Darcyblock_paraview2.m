@@ -10,6 +10,7 @@ addpath(genpath('./Libs'));
 hc = 0.5;  % Coarse Mesh size
 hf = 0.1; % Fine Mesh size
 permeability=[1,0.0005,1,1,0.0005,1,1,1,1];
+%permeability=[1,1,1,1,1,1,1,1,1];
 %% Assembly of the Hi fidelity Model
 
 fprintf('Assembling the sketch model\n');
@@ -22,15 +23,15 @@ fprintf('Done!!\n');
 Pressure_c = DarcyBlockSolver(Pc,permeability);
 Pressure_f = DarcyBlockSolver(Pf,permeability);
 
-rhs_coarse = zeros(NumNodesc,1);
-rhs_coarse(maskc) = Pc.rhs;
-rhs_fine = zeros(NumNodesf,1);
+rhs_coarse = Pc.rhs;
 rhs_fine(maskf) = Pf.rhs;
 
 Kc = cell(9,1);
+Kc_total = zeros(156,156); % TODO use NumNodesc - something
+
 for i=1:9
-    Kc{i} = zeros(NumNodesc);
-    Kc{i}(maskc,maskc)=Pc.K{i};
+    Kc{i}=Pc.K{i};
+    Kc_total = Kc_total + Pc.K{i};
 end
 
 Kf = cell(9,1);
