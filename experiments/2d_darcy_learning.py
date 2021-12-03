@@ -12,11 +12,18 @@ from pyDOE import lhs
 
 
 def train_seperable(
-    pressures, rhs, n_iterations, blocks, estimation_mode, lr, lr_schedule
+    pressures,
+    rhs,
+    n_iterations,
+    blocks,
+    estimation_mode,
+    lr,
+    lr_schedule,
+    diagonalize=True,
 ):
 
     K = torch.randn(
-        (pressures.shape[0], pressures.shape[0], blocks),
+        (blocks, pressures.shape[1], pressures.shape[1]),
         dtype=pressures.dtype,
         device=pressures.device,
         requires_grad=True,
@@ -26,14 +33,15 @@ def train_seperable(
     optimizer = torch.optim.Adam([K], lr=lr)
     scheduler = ReduceLROnPlateau(optimizer, mode="min", patience=1000)
 
-    # rhs = rhs.repeat(1, pressures.shape[-1])
     rhs = rhs.squeeze(-1)
     losses = []
 
-    # def eval_K(permeabilities):
-    #     K_total = K @ permeabilities.T
-    #     pressures_estimated = (K_total.T @ rhs).T
-    #     return pressures_estimated
+    def eval_K():
+        if diagonalize:
+            K_total = K.transpose(1, 2) @ K
+        else:
+            K_total = K
+        return K_total
 
     for i in tqdm(range(n_iterations), desc="training step"):
 
@@ -45,12 +53,16 @@ def train_seperable(
         elif estimation_mode == "seperable lhs":
             raise NotImplementedError()
         elif estimation_mode == "seperable minimize f residual":
-            K_total = K @ permeabilities.T
-            rhs_estimated = (K_total.T @ pressures.T.unsqueeze(-1)).squeeze(-1)
-            rhss = rhs.repeat(pressures.shape[-1], 1)
+
+            if diagonalize:
+                K_total = (eval_K() @ permeabilities.T).T
+            else:
+                K_total = (eval_K() @ permeabilities.T).T
+            rhs_estimated = (K_total @ pressures.unsqueeze(-1)).squeeze(-1)
+            rhss = rhs.repeat(pressures.shape[0], 1)
             loss = F.mse_loss(rhs_estimated, rhss)
             if i == n_iterations - 1:
-                pressures_estimated = torch.linalg.solve(K_total.T, rhs).T
+                pressures_estimated = torch.linalg.solve(K_total, rhs)
         else:
             raise ValueError("Unrecognized estimation mode")
 
@@ -61,7 +73,7 @@ def train_seperable(
             scheduler.step(loss)
         losses.append(loss.item())
 
-    return K, pressures_estimated, losses
+    return eval_K(), pressures_estimated, losses
 
 
 def train(pressures, rhs, n_iterations, estimation_mode, lr, lr_schedule):
@@ -107,9 +119,9 @@ def darcy_block_solver(Ks, permeabilities, rhs):
         K_total = torch.stack(Ks, dim=-1)
         K_total = K_total.to_dense()
         K_total = K_total.unsqueeze(-2) * permeabilities
-        K_total = K_total.sum(dim=-1)
+        K_total = K_total.sum(dim=-1).T
         rhss = rhs.squeeze(-1)
-        pressures = torch.linalg.solve(K_total.T, rhss).T
+        pressures = torch.linalg.solve(K_total, rhss)
         return K_total, pressures
 
     def looped():
@@ -127,7 +139,7 @@ def darcy_block_solver(Ks, permeabilities, rhs):
     # pressures_l = looped()
     # assert pressures_l.allclose(pressures_b)
 
-    K, pressures = looped()
+    K, pressures = batched()
 
     return K, pressures
 
@@ -169,8 +181,8 @@ def batch_mult(K, X):
 
 if __name__ == "__main__":
 
-    n_training_iterations = 50000
-    lr = 1e-4
+    n_training_iterations = 100000
+    lr = 1e-3
     lr_schedule = True
     n_experiments = 25
     n_plot = 10
@@ -189,7 +201,7 @@ if __name__ == "__main__":
     # permeabilities = torch.tensor(mat["permeability"]).reshape(-1)
     # pressures = torch.tensor(mat["Pressure_coarse"])
     xy_coords = torch.tensor(mat["CCoord"])
-    rhs = torch.tensor(mat["rhs_coarse"])
+    rhs = torch.tensor(mat["rhs_coarse"]).squeeze(-1)
     # rhs_fine = torch.tensor(mat["rhs_fine"])
     Ks = [scipy_sparse_to_torch_sparse(k[0]) for k in mat["Kc"]]
     # Kf = [torch.tensor(k[0]) for k in mat["Kf"]]
@@ -205,13 +217,11 @@ if __name__ == "__main__":
             samples=n_experiments,
         )
     )
-    # permeabilities[0] = torch.tensor(
-    #     [1.0, 0.0005, 1.0, 1.0, 0.0005, 1.0, 1.0, 1.0, 1.0]
-    # )
     n_blocks = permeabilities.shape[1]
     K, pressures = darcy_block_solver(Ks, permeabilities, rhs)
 
     # =================== dimensionality reduction =============
+    pressures = pressures.T  # TODO
     if n_modes is not None:
         U, S, V = torch.linalg.svd(pressures, full_matrices=False)
 
@@ -221,13 +231,14 @@ if __name__ == "__main__":
         Ut = U[:, :n_modes]
         zt = Ut.T @ pressures
         p_reconstructed_truncated = Ut @ zt
-        K_reduced = Ut.T.cpu() @ K.to_dense() @ Ut.cpu()
+        K_reduced = Ut.T.cpu() @ K @ Ut.cpu()
 
-        p_train = zt
+        p_train = zt.T
         rhs_train = Ut.T @ rhs
     else:
         p_train = pressures
         rhs_train = rhs
+    pressures = pressures.T  # TODO
 
     # =================== train ===================
 
@@ -266,11 +277,11 @@ if __name__ == "__main__":
     # ================== project solution to full order space ==================
 
     if n_modes is not None:
-        p_estimated = Ut @ p_estimated
+        p_estimated = Ut @ p_estimated.T
 
     # ================== add outlet to solution =======================
     p_estimated_with_outlet = add_outlet_to_solution(p_estimated, xy_coords)
-    p_with_outlet = add_outlet_to_solution(pressures, xy_coords)
+    p_with_outlet = add_outlet_to_solution(pressures.T, xy_coords)
     K = K.detach().cpu()
 
     # =================== plotting ===================
@@ -320,7 +331,7 @@ if __name__ == "__main__":
 
     # ---------------- plot weights ------------------
     fig, axes = plt.subplots(1, n_blocks)
-    for ax, k in zip(axes, K.T):
+    for ax, k in zip(axes, K):
         ax.imshow(k)
 
     # ---------------- plot singular values ------------------
