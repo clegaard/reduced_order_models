@@ -7,6 +7,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 import numpy as np
 import torch.nn.functional as F
 from tqdm import tqdm
+from random import randint, randrange
 from pyDOE import lhs
 
 
@@ -23,21 +24,33 @@ def train_seperable(
 
     xavier_uniform_(K)
     optimizer = torch.optim.Adam([K], lr=lr)
-    scheduler = ReduceLROnPlateau(optimizer, mode="min")
+    scheduler = ReduceLROnPlateau(optimizer, mode="min", patience=1000)
 
     # rhs = rhs.repeat(1, pressures.shape[-1])
     rhs = rhs.squeeze(-1)
     losses = []
 
-    def eval_K(permeabilities):
-        K_total = K @ permeabilities.T
-        pressures_estimated = (K_total.T @ rhs).T
-        return pressures_estimated
+    # def eval_K(permeabilities):
+    #     K_total = K @ permeabilities.T
+    #     pressures_estimated = (K_total.T @ rhs).T
+    #     return pressures_estimated
 
-    for _ in tqdm(range(n_iterations), desc="training step"):
+    for i in tqdm(range(n_iterations), desc="training step"):
 
         if estimation_mode == "seperable rhs":
-            loss = F.mse_loss(eval_K(permeabilities), pressures)
+            K_total = K @ permeabilities.T
+            pressures_estimated = (K_total.T @ rhs).T
+            loss = F.mse_loss(pressures_estimated, pressures)
+
+        elif estimation_mode == "seperable lhs":
+            raise NotImplementedError()
+        elif estimation_mode == "seperable minimize f residual":
+            K_total = K @ permeabilities.T
+            rhs_estimated = (K_total.T @ pressures.T.unsqueeze(-1)).squeeze(-1)
+            rhss = rhs.repeat(pressures.shape[-1], 1)
+            loss = F.mse_loss(rhs_estimated, rhss)
+            if i == n_iterations - 1:
+                pressures_estimated = torch.linalg.solve(K_total.T, rhs).T
         else:
             raise ValueError("Unrecognized estimation mode")
 
@@ -48,7 +61,7 @@ def train_seperable(
             scheduler.step(loss)
         losses.append(loss.item())
 
-    return K, eval_K, losses
+    return K, pressures_estimated, losses
 
 
 def train(pressures, rhs, n_iterations, estimation_mode, lr, lr_schedule):
@@ -156,14 +169,14 @@ def batch_mult(K, X):
 
 if __name__ == "__main__":
 
-    n_training_iterations = 10000
-    lr = 1e-3
+    n_training_iterations = 50000
+    lr = 1e-4
     lr_schedule = True
-    n_experiments = 100
+    n_experiments = 25
     n_plot = 10
 
     n_modes = 9  # set to None for no reduction
-    estimation_mode = "seperable rhs"
+    estimation_mode = "seperable minimize f residual"
 
     if n_modes is not None:
         assert (
@@ -227,7 +240,7 @@ if __name__ == "__main__":
     #     lr_schedule=lr_schedule,
     # )
 
-    K, K_eval, losses = train_seperable(
+    K, p_estimated, losses = train_seperable(
         p_train,
         rhs_train,
         n_training_iterations,
@@ -237,14 +250,18 @@ if __name__ == "__main__":
         lr_schedule=lr_schedule,
     )
 
-    if estimation_mode == "pressure rhs":
-        p_estimated = (K @ rhs_train).detach().cpu()
-    elif estimation_mode in {"pressure lhs", "minimize f residual"}:
-        p_estimated = torch.linalg.solve(K, rhs_train).detach().cpu()
-    elif estimation_mode == "seperable rhs":
-        p_estimated = K_eval(permeabilities).detach().cpu()
-    else:
-        raise ValueError()
+    # if estimation_mode == "pressure rhs":
+    #     p_estimated = (K @ rhs_train).detach().cpu()
+    # elif estimation_mode in {"pressure lhs", "minimize f residual"}:
+    #     p_estimated = torch.linalg.solve(K, rhs_train).detach().cpu()
+    # elif estimation_mode == "seperable rhs":
+    #     p_estimated = K_eval(permeabilities).detach().cpu()
+    # elif estimation_mode == "seperable lhs":
+    #     p_estimated = torch.linalg.solve(K_eval(permeabilities), rhs)
+    # else:
+    #     raise ValueError()
+
+    p_estimated = p_estimated.detach().cpu()
 
     # ================== project solution to full order space ==================
 
@@ -290,7 +307,8 @@ if __name__ == "__main__":
         ax.set_title("estimated")
         fig.canvas.manager.set_window_title(f"i: {idx} a={permeabilities[idx]}")
 
-    for i in range(n_plot):
+    ids = [randint(0, n_experiments - 1) for _ in range(n_plot)]
+    for i in ids:
         plot_3d(i)
 
     # ---------------- plot loss ------------------
@@ -308,8 +326,12 @@ if __name__ == "__main__":
     # ---------------- plot singular values ------------------
     if n_modes is not None:
         fig, ax = plt.subplots()
-        ax.plot(S)
-        ax.axvline(n_modes, label="number of modes", c="red")
+        # ax.stem(S)
+        torch.sum(S)
+        ax.stem(S / torch.sum(S))
+
+        # ax.axvline(n_modes + 0.5, label="number of modes", c="green")
+        # ax.set_yscale("log")
         plt.legend()
 
     plt.show()
