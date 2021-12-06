@@ -67,27 +67,56 @@ class LinearDarcyBlock(pl.LightningModule):
     def get_K_matrices(self):
         return self.B.transpose(1, 2) @ self.B
 
+    def training_step(self, batch, batch_idx):
+        pressures, permeabilities, rhs = batch
+
+        rhs_estimated = (
+            self._get_K_total(permeabilities) @ pressures.unsqueeze(-1)
+        ).squeeze(-1)
+        loss = F.mse_loss(rhs_estimated, rhs)
+
+        self.log("train_loss", loss)
+        return loss
+
 
 class ReducedLinearDarcyBlock(LinearDarcyBlock):
     """Reduced dimensional BlockDarcy solver, estimating the K matrix that solves the problem: Φ'KΦ Φ'p = Φ'f"""
 
-    def __init__(self, projection_matrix, n_nodes, n_blocks):
+    def __init__(self, projection_matrix, n_blocks):
 
-        self.Φ = projection_matrix
+        super().__init__(projection_matrix.shape[0], n_blocks)
 
-        self.B = torch.randn(
-            (n_blocks, self.Φ.shape[0], self.Φ.shape[0]),
-            requires_grad=True,
-            device=self.device,
-            dtype=self.dtype,
+        self.projection_matrix = nn.Parameter(
+            torch.tensor(projection_matrix, device=self.device, dtype=self.dtype),
+            requires_grad=False,
         )
-        xavier_uniform_(self.B)
 
     def forward(self, rhs, permeabilities):
-        raise NotImplementedError()
+
+        rhs_reduced = rhs @ self.projection_matrix.T
+
+        pressures_reduced = super().forward(rhs_reduced, permeabilities)
+
+        pressures = pressures_reduced @ self.projection_matrix
+        return pressures
 
     def training_step(self, batch, batch_idx):
-        raise NotImplementedError()
+        pressures, permeabilities, rhs = batch
+
+        pressures_reduced = pressures @ self.projection_matrix.T
+        rhs_reduced = rhs @ self.projection_matrix.T
+        batch_reduced = (pressures_reduced, permeabilities, rhs_reduced)
+
+        return super().training_step(batch_reduced, batch_idx)
+
+    def validation_step(self, batch, batch_idx):
+        pressures, permeabilities, rhs = batch
+
+        pressures_reduced = pressures @ self.projection_matrix.T
+        rhs_reduced = rhs @ self.projection_matrix.T
+        batch_reduced = (pressures_reduced, permeabilities, rhs_reduced)
+
+        return super().validation_step(batch_reduced, batch_idx)
 
 
 def darcy_block_solver(Ks, permeabilities, rhs):
@@ -138,7 +167,7 @@ def batch_mult(K, X):
 
 if __name__ == "__main__":
 
-    max_epochs = 1000
+    max_epochs = 10000
     batch_size = 75
     # n_experiments = 25
     n_train = 75
@@ -179,13 +208,15 @@ if __name__ == "__main__":
     _, pressures_validate = darcy_block_solver(Ks, permeabilities_validate, rhs)
 
     # =================== dimensionality reduction =============
-    # U, S, V = torch.linalg.svd(pressures, full_matrices=False)
+    U, S, V = torch.linalg.svd(pressures_train, full_matrices=False)
+    V = V[:n_modes]
+    # model = LinearDarcyBlock(
+    #     n_nodes=pressures_train.shape[1], n_blocks=n_blocks
+    # ).double()
 
-    model = LinearDarcyBlock(
-        n_nodes=pressures_train.shape[1], n_blocks=n_blocks
-    ).double()
+    model = ReducedLinearDarcyBlock(V, n_blocks=n_blocks).double()
 
-    trainer = pl.Trainer(gpus=1, accelerator="gpu", max_epochs=max_epochs)
+    trainer = pl.Trainer(gpus=1, max_epochs=max_epochs)
 
     rhs_train = rhs.T.repeat(n_train, 1)
     rhs_validate = rhs.T.repeat(n_validate, 1)
