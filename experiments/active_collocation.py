@@ -10,33 +10,26 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 
-def f(x, e=11):
+def f(x, e=3):
     return x ** e * (x ** 2 - 1)
 
 
-def g(x):
-    return x ** 9 * (156 * x ** 2 - 110)
+# def g(x):
+#     return x ** 9 * (156 * x ** 2 - 110)
+
+
+# def f(x):
+#     return torch.sin(x * 31)
 
 
 if __name__ == "__main__":
 
     hidden_dim = 128
-    # x, e = var("x e")
 
-    # f(-1.0) = 0.0
-    # f(1.0) = 0.0
-    # f = x ** e * (x ** 2 - 1)
-    # f = f.subs(e, 11)
-    # g = diff(diff(f, x), x)
-    # print(g)
-    # print(simplify(g))
-    # plot(f, (x, -1, 1))
-    # plot(g, (x, -1, 1))
     dx_dense = 0.001
     dx_collocation = 0.01
     device = "cuda"
     max_epochs = 1000
-    # floating_collocation = True
 
     model = nn.Sequential(
         nn.Linear(1, hidden_dim),
@@ -67,8 +60,8 @@ if __name__ == "__main__":
     x_collocation_original = x_collocation.clone().detach()
 
     # ================== optimizers ==================
-    optimizer_min = torch.optim.Adam(model.parameters())
-    optimizer_max = torch.optim.Adam((x_collocation,))
+    optimizer_min = torch.optim.Adam(model.parameters(), lr=1e-3)
+    optimizer_max = torch.optim.Adam((x_collocation,), lr=0.0)
 
     # scheduler = ReduceLROnPlateau(optimizer_min, "min", patience=100)
 
@@ -76,27 +69,23 @@ if __name__ == "__main__":
 
     for _ in tqdm(range(max_epochs)):
 
-        # if floating_collocation:
-        #     y_true_collocation = f(x_collocation)
         y_true_collocation = f(x_collocation)
         y_estimated_collocation = model(x_collocation)
 
         loss = F.mse_loss(y_estimated_collocation, y_true_collocation)
         loss.backward()
 
+        x_collocation.grad.data.mul_(-1)
+
         optimizer_min.step()
         optimizer_max.step()
 
-        # if floating_collocation:
-        #     # x_collocation.grad.data.mul_(-1)
-        #     optimizer_max.step()
-        #     optimizer_max.zero_grad()
-        #     x_collocation = torch.clamp(x_collocation, -1.0, 1.0).clone().detach()
-        #     x_collocation.requires_grad = True
-
-        # x_collocation = torch.clamp(x_collocation, -1.0, 1.0).clone().detach()
+        torch.clamp_(x_collocation.data, -1.0, 1.0)
+        # x_collocation.requires_grad = True
 
         optimizer_min.zero_grad()
+        optimizer_max.zero_grad()
+
         # scheduler.step(loss)
         losses.append(loss.item())
 
@@ -105,6 +94,7 @@ if __name__ == "__main__":
     y_estimated_dense = model(x_dense)
     y_true_collocation = f(x_collocation)
     y_true_collocation_original = f(x_collocation_original)
+    y_estimated_collocation = model(x_collocation)
 
     # ========================== send back to cpu ============================
 
@@ -123,7 +113,7 @@ if __name__ == "__main__":
 
     # ========================== plotting ============================
 
-    fig, (ax1, ax2) = plt.subplots(2, 1)
+    fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True)
     ax1.plot(x_dense, y_true_dense, label="true")
     ax1.plot(x_dense, y_estimated_dense, label="estimated")
     ax1.scatter(
@@ -141,7 +131,7 @@ if __name__ == "__main__":
     )
     ax1.set_xlabel("x")
     ax1.set_ylabel("f(x)")
-    fig.legend()
+    ax1.legend()
 
     ax2.plot(x_dense, error_dense)
     ax2.set_xlabel("x")
@@ -153,7 +143,6 @@ if __name__ == "__main__":
         label="collocation points (optimized)",
         c="r",
     )
-    fig.legend()
 
     fig, ax = plt.subplots()
     ax.plot(losses)
