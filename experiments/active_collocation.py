@@ -1,16 +1,13 @@
-from symengine import var, diff, lambdify
-from sympy import plot, simplify
 import torch
-from torch import optim
-from torch._C import ScriptFunction
 import torch.nn as nn
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from matplotlib.animation import FuncAnimation
+from matplotlib.animation import FuncAnimation, PillowWriter
 from math import ceil
 import numpy as np
+from os import makedirs
 
 
 def f(x, e=3):
@@ -32,7 +29,7 @@ if __name__ == "__main__":
     dx_dense = 0.001
     dx_collocation = 0.1
     device = "cuda"
-    max_epochs = 1000
+    max_epochs = 5000
     animate_every = ceil(max_epochs / 100)
 
     model = nn.Sequential(
@@ -104,35 +101,20 @@ if __name__ == "__main__":
 
         if animate_every is not None and (i % animate_every) == 0:
             y_dense = model(x_dense).detach().cpu()
-            y_collocation = model(x_collocation).detach().cpu()
+
             collocation_historical.append(x_collocation.detach().cpu())
             y_dense_historical.append(y_dense)
             error_historical_dense.append(
                 F.mse_loss(y_dense, y_true_dense, reduction="none")
             )
-            y_collocation_historical.append(y_collocation)
+
+            y_collocation = model(x_collocation)
+            y_collocation_historical.append(y_collocation.detach().cpu())
             error_historical_collocation.append(
-                F.mse_loss(
-                    x_collocation.detach().cpu(), y_collocation, reduction="none"
-                )
+                F.mse_loss(y_collocation, y_true_collocation, reduction="none")
+                .detach()
+                .cpu()
             )
-
-    # for _ in tqdm(range(max_epochs)):
-
-    #     y_true_collocation = f(x_collocation)
-    #     y_estimated_collocation = model(x_collocation)
-
-    #     loss = F.mse_loss(y_estimated_collocation, y_true_collocation)
-    #     loss.backward()
-
-    #     x_collocation.grad.data.mul_(-1)
-
-    #     optimizer_max.step()
-
-    #     torch.clamp_(x_collocation.data, -1.0, 1.0)
-    #     # x_collocation.data.add_(torch.randn_like(x_collocation) * noise)
-
-    #     optimizer_max.zero_grad()
 
     # =============================== validation ============================
 
@@ -146,6 +128,7 @@ if __name__ == "__main__":
         y_dense_historical = torch.stack(y_dense_historical).numpy()
         y_collocation_historical = torch.stack(y_collocation_historical).numpy()
         error_historical_dense = torch.stack(error_historical_dense).numpy()
+        error_historical_collocation = torch.stack(error_historical_collocation).numpy()
 
     # ========================== send back to cpu ============================
 
@@ -224,8 +207,8 @@ if __name__ == "__main__":
             c="r",
         )
         txt = ax1.text(
-            0.75,
-            0.75,
+            0.1,
+            0.1,
             "iteration x",
             horizontalalignment="center",
             verticalalignment="center",
@@ -237,19 +220,32 @@ if __name__ == "__main__":
 
         # error graph
         (ln_error,) = ax2.plot([], [], label="error")
-
+        s_error_colloc = ax2.scatter(
+            [],
+            [],
+            marker="x",
+            label="collocation points",
+            c="r",
+        )
         ax2.set_xlabel("x")
-        ax2.set_ylabel("log error(x)")
-        # ax2.set_yscale("log")
+        ax2.set_ylabel("error(x)")
+        ax2.set_yscale("log")
+
+        def init():
+
+            ax2.set_xlim(-1, 1)
+            ax2.set_ylim(error_historical_dense.min(), error_historical_dense.max())
+            return (ln_est, ln_error, s_est_colloc, s_error_colloc, txt)
 
         def update(frame):
             i, (y, error_dense, x_colloc, y_colloc, error_colloc) = frame
             ln_est.set_data(x_dense, y)
             ln_error.set_data(x_dense, error_dense)
             s_est_colloc.set_offsets(np.hstack((x_colloc, y_colloc)))
+            s_error_colloc.set_offsets(np.hstack((x_colloc, error_colloc)))
 
             txt.set_text(f"iteration: {i*animate_every}")
-            return (ln_est, ln_error, s_est_colloc, txt)
+            return (ln_est, ln_error, s_est_colloc, s_error_colloc, txt)
 
         ani = FuncAnimation(
             fig,
@@ -263,8 +259,12 @@ if __name__ == "__main__":
                     error_historical_collocation,
                 )
             ),
-            # init_func=init,
+            init_func=init,
             blit=True,
         )
 
         plt.show()
+        writer = PillowWriter()
+
+        makedirs("results", exist_ok=True)
+        ani.save("results/active_collocation.gif", writer=writer)
