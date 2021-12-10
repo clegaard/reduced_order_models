@@ -1,3 +1,4 @@
+from re import A
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
@@ -8,6 +9,7 @@ from matplotlib.animation import FuncAnimation, PillowWriter
 from math import ceil
 import numpy as np
 from os import makedirs
+from matplotlib.collections import LineCollection
 
 
 def f(x, e=3):
@@ -21,23 +23,22 @@ def f(x, e=3):
 # def f(x):
 #     return torch.sin(x * 31)
 
+
 # observations, error goes very low in collocation points
 # somehow need to kick the points out
 
 if __name__ == "__main__":
 
-    hidden_dim = 128
+    hidden_dim = 256
 
     dx_dense = 0.001
     dx_collocation = 0.3
     device = "cuda"
     max_epochs = 5000
-    animate_every = ceil(max_epochs / 100)
+    animate_every = None  # ceil(max_epochs / 100)
 
-    optimize_model_iterations = 1000
-    optimize_collocation_iterations = 0
-    optimize_collocation_threshold = 1e-5
-    optimize_collocation_hysteresis = 1e-2
+    optimize_collocation_threshold = 1e-9
+    optimize_collocation_patience = 10
 
     model = nn.Sequential(
         nn.Linear(1, hidden_dim),
@@ -67,7 +68,7 @@ if __name__ == "__main__":
     x_collocation.requires_grad = True
     x_collocation_original = x_collocation.clone().detach()
 
-    noise = 0.0001
+    noise = 0.0000
 
     # ================== optimizers ==================
     optimizer_min = torch.optim.Adam(model.parameters(), lr=1e-3)
@@ -81,6 +82,7 @@ if __name__ == "__main__":
     y_collocation_historical = []
     error_historical_dense = []
     error_historical_collocation = []
+    optimization_mode_historical = []
 
     y_true_dense = f(x_dense).detach().cpu()
 
@@ -92,14 +94,12 @@ if __name__ == "__main__":
 
     def optimize_model():
         optimizer_min.step()
-        optimizer_min.zero_grad()
 
     def optimize_collocation_points():
         x_collocation.grad.data.mul_(-1)
         optimizer_max.step()
         x_collocation.data.add_(torch.randn_like(x_collocation) * noise)
         torch.clamp_(x_collocation.data, -1.0, 1.0)
-        optimizer_max.zero_grad()
 
     def should_optimize_model(i, loss):
         # cycle = i % (optimize_model_iterations + optimize_collocation_iterations)
@@ -111,27 +111,42 @@ if __name__ == "__main__":
 
     optimization_mode = "model"
 
+    iter_since_improvement = 0
+    best = None
+    pbar.set_description(f"Training: optimizing {optimization_mode}")
+
     for i in pbar:
+
+        optimizer_min.zero_grad()
+        optimizer_max.zero_grad()
 
         loss, y_true_collocation = compute_loss(x_collocation)
         loss.backward()
-
-        # pbar.set_description("Training: optimizing model")
 
         if optimization_mode == "model":
             optimize_model()
             if loss.item() < optimize_collocation_threshold:
                 optimization_mode = "collocation"
+                pbar.set_description("Training: optimizing collocation")
         else:
             optimize_collocation_points()
-            if (
-                loss.item()
-                > optimize_collocation_threshold + optimize_collocation_hysteresis
-            ):
+
+            if best is None:
+                best = loss.item()
+            elif loss.item() > best:
+                iter_since_improvement = 0
+                best = loss.item()
+            elif iter_since_improvement == optimize_collocation_patience - 1:
                 optimization_mode = "model"
+                pbar.set_description("Training: optimizing model")
+                iter_since_improvement = 0
+                best = None
+            else:
+                iter_since_improvement += 1
 
         # scheduler.step(loss)
         losses.append(loss.item())
+        optimization_mode_historical.append(optimization_mode == "model")
 
         if animate_every is not None and (i % animate_every) == 0:
             y_dense = model(x_dense).detach().cpu()
@@ -223,9 +238,36 @@ if __name__ == "__main__":
 
     fig, ax = plt.subplots()
     ax.plot(losses)
+    changes = [
+        idx
+        for idx, (cur, next) in enumerate(
+            zip(optimization_mode_historical[:-1], optimization_mode_historical[1:])
+        )
+        if cur != next
+    ]
+    for i in changes:
+        ax.axvline(i, c="r")
+    # x = np.linspace(0, len(losses) - 1, len(losses))
+    # y = np.array(losses)
+    # c = ["b" if a == "model" else "r" for a in optimization_mode_historical]
+    # lines = [
+    #     ((x0, y0), (x1, y1)) for x0, y0, x1, y1 in zip(x[:-1], y[:-1], x[1:], y[1:])
+    # ]
+    # colored_lines = LineCollection(lines, colors=c, linewidths=(2,))
+    # ax.add_collection(colored_lines)
+    # ax.plot(
+    #     x[np.array(optimization_mode_historical)],
+    #     y[np.array(optimization_mode_historical)],
+    #     c="b",
+    # )
+    # ax.plot(
+    #     x[np.array(optimization_mode_historical) == False],
+    #     y[np.array(optimization_mode_historical) == False],
+    #     c="r",
+    # )
+
     ax.set_yscale("log")
-    plt.axhline(optimize_collocation_threshold)
-    plt.axhline(optimize_collocation_threshold + optimize_collocation_hysteresis)
+    ax.axhline(optimize_collocation_threshold, c="g")
 
     plt.show()
 
