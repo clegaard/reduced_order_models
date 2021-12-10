@@ -14,6 +14,60 @@ import torch.nn as nn
 from pytorch_lightning.loggers import TensorBoardLogger
 
 
+class DeepDarcy(pl.LightningModule):
+    """Deep Darcy Solver"""
+
+    def __init__(self, n_nodes, n_blocks, hidden_dim=128):
+        super().__init__()
+
+        self.net = nn.Sequential(
+            nn.Linear(n_blocks, hidden_dim),
+            nn.Softplus(),
+            nn.Dropout(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Softplus(),
+            nn.Dropout(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Softplus(),
+            nn.Dropout(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Softplus(),
+            nn.Dropout(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Softplus(),
+            nn.Dropout(),
+            nn.Linear(hidden_dim, n_nodes),
+        )
+        for l in self.net:
+            if isinstance(l, nn.Linear):
+                xavier_uniform_(l.weight)
+
+    def forward(self, rhs, permeabilities):
+        return self.net(permeabilities)
+
+    def training_step(self, batch, batch_idx):
+        pressures, permeabilities, rhs = batch
+
+        pressures_estimated = self.net(permeabilities)
+        loss = F.mse_loss(pressures_estimated, pressures)
+
+        self.log("train_loss", loss)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        pressures, permeabilities, rhs = batch
+
+        pressures_estimated = self.net(permeabilities)
+        loss = F.mse_loss(pressures_estimated, pressures)
+
+        self.log("val_loss", loss)
+        return loss
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
+        return optimizer
+
+
 class LinearDarcyBlock(pl.LightningModule):
     """Full dimensional BlockDarcy solver, estimating the K matrix that solves the problem: K p = f"""
 
@@ -47,10 +101,14 @@ class LinearDarcyBlock(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         pressures, permeabilities, rhs = batch
 
-        rhs_estimated = (
-            self._get_K_total(permeabilities) @ pressures.unsqueeze(-1)
-        ).squeeze(-1)
-        loss = F.mse_loss(rhs_estimated, rhs)
+        pressures_estimated = torch.linalg.solve(self._get_K_total(permeabilities), rhs)
+
+        # rhs_estimated = (
+        #     self._get_K_total(permeabilities) @ pressures.unsqueeze(-1)
+        # ).squeeze(-1)
+        # loss = F.mse_loss(rhs_estimated, rhs)
+
+        loss = F.mse_loss(pressures_estimated, pressures)
 
         self.log("val_loss", loss)
         return loss
@@ -66,17 +124,6 @@ class LinearDarcyBlock(pl.LightningModule):
 
     def get_K_matrices(self):
         return self.B.transpose(1, 2) @ self.B
-
-    def training_step(self, batch, batch_idx):
-        pressures, permeabilities, rhs = batch
-
-        rhs_estimated = (
-            self._get_K_total(permeabilities) @ pressures.unsqueeze(-1)
-        ).squeeze(-1)
-        loss = F.mse_loss(rhs_estimated, rhs)
-
-        self.log("train_loss", loss)
-        return loss
 
 
 class ReducedLinearDarcyBlock(LinearDarcyBlock):
@@ -167,9 +214,8 @@ def batch_mult(K, X):
 
 if __name__ == "__main__":
 
-    max_epochs = 10000
+    max_epochs = 3000
     batch_size = 75
-    # n_experiments = 25
     n_train = 75
     n_validate = 25
     n_plot = 10
@@ -210,13 +256,14 @@ if __name__ == "__main__":
     # =================== dimensionality reduction =============
     U, S, V = torch.linalg.svd(pressures_train, full_matrices=False)
     V = V[:n_modes]
-    # model = LinearDarcyBlock(
-    #     n_nodes=pressures_train.shape[1], n_blocks=n_blocks
-    # ).double()
 
-    model = ReducedLinearDarcyBlock(V, n_blocks=n_blocks).double()
+    model = LinearDarcyBlock(
+        n_nodes=pressures_train.shape[1], n_blocks=n_blocks
+    ).double()
+    # model = ReducedLinearDarcyBlock(V, n_blocks=n_blocks).double()
+    # model = DeepDarcy(n_nodes=pressures_train.shape[1], n_blocks=n_blocks).double()
 
-    trainer = pl.Trainer(gpus=1, max_epochs=max_epochs)
+    trainer = pl.Trainer(devices=1, max_epochs=max_epochs, accelerator="gpu")
 
     rhs_train = rhs.T.repeat(n_train, 1)
     rhs_validate = rhs.T.repeat(n_validate, 1)
@@ -227,13 +274,20 @@ if __name__ == "__main__":
     train_loader = DataLoader(train_data, batch_size=batch_size)
     validate_loader = DataLoader(validate_data, batch_size=batch_size)
 
-    logger = TensorBoardLogger("tb_logs", name="my_model")
+    logger = TensorBoardLogger("tb_logs", version=type(model).__name__)
 
     trainer.fit(model, train_loader, validate_loader)
 
     model = model.cpu()
-    K = model.get_K_matrices().detach()
+
     p_estimated = model(rhs_validate, permeabilities_validate).detach()
+
+    linear_model = False
+    try:
+        K = model.get_K_matrices().detach()
+        linear_model = True
+    except Exception:
+        pass
 
     # ================== add outlet to solution =======================
     p_with_outlet = add_outlet_to_solution(pressures_validate.T, xy_coords)
@@ -278,9 +332,10 @@ if __name__ == "__main__":
         plot_3d(i)
 
     # ---------------- plot weights ------------------
-    fig, axes = plt.subplots(1, n_blocks)
-    for ax, k in zip(axes, K):
-        ax.imshow(k)
+    if linear_model:
+        fig, axes = plt.subplots(1, n_blocks)
+        for ax, k in zip(axes, K):
+            ax.imshow(k)
 
     # ---------------- plot singular values ------------------
     # if n_modes is not None:
