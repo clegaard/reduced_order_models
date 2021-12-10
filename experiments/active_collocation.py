@@ -21,16 +21,23 @@ def f(x, e=3):
 # def f(x):
 #     return torch.sin(x * 31)
 
+# observations, error goes very low in collocation points
+# somehow need to kick the points out
 
 if __name__ == "__main__":
 
     hidden_dim = 128
 
     dx_dense = 0.001
-    dx_collocation = 0.1
+    dx_collocation = 0.3
     device = "cuda"
     max_epochs = 5000
     animate_every = ceil(max_epochs / 100)
+
+    optimize_model_iterations = 1000
+    optimize_collocation_iterations = 0
+    optimize_collocation_threshold = 1e-5
+    optimize_collocation_hysteresis = 1e-2
 
     model = nn.Sequential(
         nn.Linear(1, hidden_dim),
@@ -60,11 +67,11 @@ if __name__ == "__main__":
     x_collocation.requires_grad = True
     x_collocation_original = x_collocation.clone().detach()
 
-    noise = 0.0  # 0.001
+    noise = 0.0001
 
     # ================== optimizers ==================
     optimizer_min = torch.optim.Adam(model.parameters(), lr=1e-3)
-    optimizer_max = torch.optim.Adam((x_collocation,), lr=1e-3)
+    optimizer_max = torch.optim.Adam((x_collocation,), lr=1e-2)
 
     # scheduler = ReduceLROnPlateau(optimizer_min, "min", patience=100)
 
@@ -77,24 +84,51 @@ if __name__ == "__main__":
 
     y_true_dense = f(x_dense).detach().cpu()
 
-    for i in tqdm(range(max_epochs)):
-
+    def compute_loss(x_collocation):
         y_true_collocation = f(x_collocation)
         y_estimated_collocation = model(x_collocation)
-
         loss = F.mse_loss(y_estimated_collocation, y_true_collocation)
+        return loss, y_true_collocation
+
+    def optimize_model():
+        optimizer_min.step()
+        optimizer_min.zero_grad()
+
+    def optimize_collocation_points():
+        x_collocation.grad.data.mul_(-1)
+        optimizer_max.step()
+        x_collocation.data.add_(torch.randn_like(x_collocation) * noise)
+        torch.clamp_(x_collocation.data, -1.0, 1.0)
+        optimizer_max.zero_grad()
+
+    def should_optimize_model(i, loss):
+        # cycle = i % (optimize_model_iterations + optimize_collocation_iterations)
+        # return cycle < optimize_model_iterations
+
+        return loss > optimize_collocation_threshold
+
+    pbar = tqdm(range(max_epochs))
+
+    optimization_mode = "model"
+
+    for i in pbar:
+
+        loss, y_true_collocation = compute_loss(x_collocation)
         loss.backward()
 
-        x_collocation.grad.data.mul_(-1)
+        # pbar.set_description("Training: optimizing model")
 
-        optimizer_min.step()
-        optimizer_max.step()
-
-        torch.clamp_(x_collocation.data, -1.0, 1.0)
-        x_collocation.data.add_(torch.randn_like(x_collocation) * noise)
-
-        optimizer_min.zero_grad()
-        optimizer_max.zero_grad()
+        if optimization_mode == "model":
+            optimize_model()
+            if loss.item() < optimize_collocation_threshold:
+                optimization_mode = "collocation"
+        else:
+            optimize_collocation_points()
+            if (
+                loss.item()
+                > optimize_collocation_threshold + optimize_collocation_hysteresis
+            ):
+                optimization_mode = "model"
 
         # scheduler.step(loss)
         losses.append(loss.item())
@@ -187,11 +221,13 @@ if __name__ == "__main__":
         )
         ax2.set_yscale("log")
 
-        fig, ax = plt.subplots()
-        ax.plot(losses)
-        ax.set_yscale("log")
+    fig, ax = plt.subplots()
+    ax.plot(losses)
+    ax.set_yscale("log")
+    plt.axhline(optimize_collocation_threshold)
+    plt.axhline(optimize_collocation_threshold + optimize_collocation_hysteresis)
 
-        plt.show()
+    plt.show()
 
     # ========================== animations ===================
 
@@ -234,7 +270,10 @@ if __name__ == "__main__":
         def init():
 
             ax2.set_xlim(-1, 1)
-            ax2.set_ylim(error_historical_dense.min(), error_historical_dense.max())
+            ax2.set_ylim(
+                max(error_historical_dense.min(), np.finfo(float).eps),
+                error_historical_dense.max(),
+            )
             return (ln_est, ln_error, s_est_colloc, s_error_colloc, txt)
 
         def update(frame):
