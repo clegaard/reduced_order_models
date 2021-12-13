@@ -10,11 +10,12 @@ from pyDOE import lhs
 import pytorch_lightning as pl
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.dataset import TensorDataset
-import torch.nn as nn
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from pytorch_lightning.loggers import TensorBoardLogger
+import torch.nn as nn
 
 
-class DeepDarcy(pl.LightningModule):
+class DeepVectorizedDarcy(pl.LightningModule):
     """Deep Darcy Solver"""
 
     def __init__(self, n_nodes, n_blocks, hidden_dim=128):
@@ -42,11 +43,11 @@ class DeepDarcy(pl.LightningModule):
             if isinstance(l, nn.Linear):
                 xavier_uniform_(l.weight)
 
-    def forward(self, rhs, permeabilities):
+    def forward(self, _, permeabilities):
         return self.net(permeabilities)
 
     def training_step(self, batch, batch_idx):
-        pressures, permeabilities, rhs = batch
+        pressures, permeabilities, _ = batch
 
         pressures_estimated = self.net(permeabilities)
         loss = F.mse_loss(pressures_estimated, pressures)
@@ -55,7 +56,7 @@ class DeepDarcy(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        pressures, permeabilities, rhs = batch
+        pressures, permeabilities, _ = batch
 
         pressures_estimated = self.net(permeabilities)
         loss = F.mse_loss(pressures_estimated, pressures)
@@ -65,6 +66,78 @@ class DeepDarcy(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
+        return optimizer
+
+
+class DeepDarcy(pl.LightningModule):
+    """Deep Darcy Solver"""
+
+    def __init__(self, coordinates, n_nodes, n_blocks, hidden_dim=128):
+        super().__init__()
+
+        self.net = nn.Sequential(
+            nn.Linear(n_blocks + coordinates.shape[1], hidden_dim),
+            nn.Softplus(),
+            # nn.Dropout(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Softplus(),
+            # nn.Dropout(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Softplus(),
+            # nn.Dropout(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Softplus(),
+            # nn.Dropout(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Softplus(),
+            # nn.Dropout(),
+            nn.Linear(hidden_dim, 1),
+        )
+        for l in self.net:
+            if isinstance(l, nn.Linear):
+                xavier_uniform_(l.weight)
+
+        self.coordinates = nn.parameter.Parameter(coordinates)
+
+    def forward(self, permeabilities):
+
+        permeabilities = permeabilities[:, None].expand(
+            permeabilities.shape[0], self.coordinates.shape[0], permeabilities.shape[1]
+        )
+        coordinates = self.coordinates[None].expand(
+            permeabilities.shape[0],
+            *self.coordinates.shape,
+        )
+
+        x = torch.cat((permeabilities, coordinates), dim=-1)
+        return self.net(x).squeeze(-1)
+
+    def training_step(self, batch, batch_idx):
+        pressures, permeabilities, _ = batch
+
+        pressures_estimated = self.forward(permeabilities)
+        loss = F.mse_loss(pressures_estimated, pressures)
+
+        self.log("train_loss", loss)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        pressures, permeabilities, _ = batch
+
+        pressures_estimated = self.forward(permeabilities)
+        loss = F.mse_loss(pressures_estimated, pressures)
+
+        self.log("val_loss", loss)
+        return loss
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
+        scheduler = ReduceLROnPlateau(optimizer)
+        # return {
+        #     "optimizer": optimizer,
+        #     "lr_scheduler": scheduler,
+        #     "monitor": "train_loss",
+        # }
         return optimizer
 
 
@@ -80,34 +153,35 @@ class LinearDarcyBlock(pl.LightningModule):
                 requires_grad=True,
                 device=self.device,
                 dtype=self.dtype,
+            ),
+        )
+
+        self.rhs = nn.parameter.Parameter(
+            torch.randn(
+                (n_nodes,),
+                requires_grad=True,
+                device=self.device,
+                dtype=self.dtype,
             )
         )
         xavier_uniform_(self.B)
 
-    def forward(self, rhs, permeabilities):
-        return torch.linalg.solve(self._get_K_total(permeabilities), rhs)
+    def forward(self, permeabilities):
+        return torch.linalg.solve(self._get_K_total(permeabilities), self.rhs)
 
     def training_step(self, batch, batch_idx):
-        pressures, permeabilities, rhs = batch
+        pressures, permeabilities, _ = batch
 
-        rhs_estimated = (
-            self._get_K_total(permeabilities) @ pressures.unsqueeze(-1)
-        ).squeeze(-1)
-        loss = F.mse_loss(rhs_estimated, rhs)
+        pressures_estimated = self.forward(permeabilities)
+        loss = F.mse_loss(pressures_estimated, pressures)
 
         self.log("train_loss", loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        pressures, permeabilities, rhs = batch
+        pressures, permeabilities, _ = batch
 
-        pressures_estimated = torch.linalg.solve(self._get_K_total(permeabilities), rhs)
-
-        # rhs_estimated = (
-        #     self._get_K_total(permeabilities) @ pressures.unsqueeze(-1)
-        # ).squeeze(-1)
-        # loss = F.mse_loss(rhs_estimated, rhs)
-
+        pressures_estimated = self.forward(permeabilities)
         loss = F.mse_loss(pressures_estimated, pressures)
 
         self.log("val_loss", loss)
@@ -138,32 +212,11 @@ class ReducedLinearDarcyBlock(LinearDarcyBlock):
             requires_grad=False,
         )
 
-    def forward(self, rhs, permeabilities):
+    def forward(self, permeabilities):
 
-        rhs_reduced = rhs @ self.projection_matrix.T
-
-        pressures_reduced = super().forward(rhs_reduced, permeabilities)
-
+        pressures_reduced = super().forward(permeabilities)
         pressures = pressures_reduced @ self.projection_matrix
         return pressures
-
-    def training_step(self, batch, batch_idx):
-        pressures, permeabilities, rhs = batch
-
-        pressures_reduced = pressures @ self.projection_matrix.T
-        rhs_reduced = rhs @ self.projection_matrix.T
-        batch_reduced = (pressures_reduced, permeabilities, rhs_reduced)
-
-        return super().training_step(batch_reduced, batch_idx)
-
-    def validation_step(self, batch, batch_idx):
-        pressures, permeabilities, rhs = batch
-
-        pressures_reduced = pressures @ self.projection_matrix.T
-        rhs_reduced = rhs @ self.projection_matrix.T
-        batch_reduced = (pressures_reduced, permeabilities, rhs_reduced)
-
-        return super().validation_step(batch_reduced, batch_idx)
 
 
 def darcy_block_solver(Ks, permeabilities, rhs):
@@ -234,6 +287,7 @@ if __name__ == "__main__":
     xy_coords = torch.tensor(mat["CCoord"])
     rhs = torch.tensor(mat["rhs_coarse"]).squeeze(-1)
     Ks = [scipy_sparse_to_torch_sparse(k[0]) for k in mat["Kc"]]
+    xy_coords_non_outlet = xy_coords[find_non_outlet_idx(xy_coords).squeeze()]
 
     # ============ generate data ===================
 
@@ -253,34 +307,42 @@ if __name__ == "__main__":
     )
     _, pressures_validate = darcy_block_solver(Ks, permeabilities_validate, rhs)
 
-    # =================== dimensionality reduction =============
-    U, S, V = torch.linalg.svd(pressures_train, full_matrices=False)
-    V = V[:n_modes]
-
-    model = LinearDarcyBlock(
-        n_nodes=pressures_train.shape[1], n_blocks=n_blocks
-    ).double()
-    # model = ReducedLinearDarcyBlock(V, n_blocks=n_blocks).double()
-    # model = DeepDarcy(n_nodes=pressures_train.shape[1], n_blocks=n_blocks).double()
-
-    trainer = pl.Trainer(devices=1, max_epochs=max_epochs, accelerator="gpu")
-
     rhs_train = rhs.T.repeat(n_train, 1)
     rhs_validate = rhs.T.repeat(n_validate, 1)
     train_data = TensorDataset(pressures_train, permeabilities_train, rhs_train)
     validate_data = TensorDataset(
         pressures_validate, permeabilities_validate, rhs_validate
     )
-    train_loader = DataLoader(train_data, batch_size=batch_size)
-    validate_loader = DataLoader(validate_data, batch_size=batch_size)
+    train_loader = DataLoader(train_data, batch_size=batch_size, pin_memory=False)
+    validate_loader = DataLoader(validate_data, batch_size=batch_size, pin_memory=False)
 
-    logger = TensorBoardLogger("tb_logs", version=type(model).__name__)
+    U, S, V = torch.linalg.svd(pressures_train, full_matrices=False)
+    V = V[:n_modes]
+
+    # model = LinearDarcyBlock(
+    #     n_nodes=pressures_train.shape[1], n_blocks=n_blocks
+    # ).double()
+    model = ReducedLinearDarcyBlock(V, n_blocks=n_blocks).double()
+    # model = DeepDarcy(
+    #     coordinates=xy_coords_non_outlet,
+    #     n_nodes=pressures_train.shape[1],
+    #     n_blocks=n_blocks,
+    # ).double()
+
+    logger = TensorBoardLogger("tb_logs", name=type(model).__name__)
+    trainer = pl.Trainer(
+        devices=1,
+        max_epochs=max_epochs,
+        accelerator="gpu",
+        check_val_every_n_epoch=100,
+    )
 
     trainer.fit(model, train_loader, validate_loader)
 
+    # =================== validation ====================================
     model = model.cpu()
 
-    p_estimated = model(rhs_validate, permeabilities_validate).detach()
+    p_estimated = model(permeabilities_validate).detach()
 
     linear_model = False
     try:
