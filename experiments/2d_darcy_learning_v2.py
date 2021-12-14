@@ -13,6 +13,26 @@ from torch.utils.data.dataset import TensorDataset
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from pytorch_lightning.loggers import TensorBoardLogger
 import torch.nn as nn
+from pytorch_lightning.callbacks import Callback
+import copy
+
+
+class MetricsCallback(Callback):
+    """PyTorch Lightning metric callback."""
+
+    def __init__(self):
+        super().__init__()
+        self.metrics = {}
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if not trainer.sanity_checking:
+            if self.metrics == {}:
+                self.metrics = {k: [] for k in trainer.callback_metrics.keys()}
+                self.metrics["epochs"] = []
+
+            self.metrics["epochs"].append(trainer.current_epoch)
+            for k, v in trainer.callback_metrics.items():
+                self.metrics[k].append(v.item())
 
 
 class DeepVectorizedDarcy(pl.LightningModule):
@@ -267,7 +287,7 @@ def batch_mult(K, X):
 
 if __name__ == "__main__":
 
-    max_epochs = 3000
+    max_epochs = 10000
     batch_size = 75
     n_train = 75
     n_validate = 25
@@ -309,12 +329,18 @@ if __name__ == "__main__":
 
     rhs_train = rhs.T.repeat(n_train, 1)
     rhs_validate = rhs.T.repeat(n_validate, 1)
-    train_data = TensorDataset(pressures_train, permeabilities_train, rhs_train)
-    validate_data = TensorDataset(
-        pressures_validate, permeabilities_validate, rhs_validate
+    train_data = TensorDataset(
+        pressures_train,
+        permeabilities_train,
+        rhs_train,
     )
-    train_loader = DataLoader(train_data, batch_size=batch_size, pin_memory=False)
-    validate_loader = DataLoader(validate_data, batch_size=batch_size, pin_memory=False)
+    validate_data = TensorDataset(
+        pressures_validate,
+        permeabilities_validate,
+        rhs_validate,
+    )
+    train_loader = DataLoader(train_data, batch_size=batch_size, pin_memory=True)
+    validate_loader = DataLoader(validate_data, batch_size=batch_size, pin_memory=True)
 
     U, S, V = torch.linalg.svd(pressures_train, full_matrices=False)
     V = V[:n_modes]
@@ -322,19 +348,22 @@ if __name__ == "__main__":
     # model = LinearDarcyBlock(
     #     n_nodes=pressures_train.shape[1], n_blocks=n_blocks
     # ).double()
-    model = ReducedLinearDarcyBlock(V, n_blocks=n_blocks).double()
-    # model = DeepDarcy(
-    #     coordinates=xy_coords_non_outlet,
-    #     n_nodes=pressures_train.shape[1],
-    #     n_blocks=n_blocks,
-    # ).double()
+    # model = ReducedLinearDarcyBlock(V, n_blocks=n_blocks).double()
+    model = DeepDarcy(
+        coordinates=xy_coords_non_outlet,
+        n_nodes=pressures_train.shape[1],
+        n_blocks=n_blocks,
+    ).double()
+
+    cb = MetricsCallback()
 
     logger = TensorBoardLogger("tb_logs", name=type(model).__name__)
     trainer = pl.Trainer(
         devices=1,
         max_epochs=max_epochs,
         accelerator="gpu",
-        check_val_every_n_epoch=100,
+        # check_val_every_n_epoch=100,
+        callbacks=[cb],
     )
 
     trainer.fit(model, train_loader, validate_loader)
@@ -395,19 +424,34 @@ if __name__ == "__main__":
 
     # ---------------- plot weights ------------------
     if linear_model:
-        fig, axes = plt.subplots(1, n_blocks)
-        for ax, k in zip(axes, K):
-            ax.imshow(k)
+        fig, axes = plt.subplots(3, 3)
+
+        for i, (ax, k) in enumerate(zip(axes.reshape(-1), K)):
+            im = ax.imshow(k, vmin=K.min(), vmax=K.max())
+            ax.set_title(fr"$K_{i}$")
+            ax.set_axis_off()
+
+        fig.subplots_adjust(right=0.8)
+        cbar_ax = fig.add_axes([0.85, 0.15, 0.05, 0.7])
+        fig.colorbar(im, cax=cbar_ax)
 
     # ---------------- plot singular values ------------------
-    # if n_modes is not None:
-    #     fig, ax = plt.subplots()
-    #     # ax.stem(S)
-    #     torch.sum(S)
-    #     ax.stem(S / torch.sum(S))
 
-    #     # ax.axvline(n_modes + 0.5, label="number of modes", c="green")
-    #     # ax.set_yscale("log")
-    #     plt.legend()
+    fig, ax = plt.subplots()
+    ax.stem(S / torch.sum(S))
+    ax.set_xlabel("s / sum(S)")
+    ax.axvline(n_modes + 0.5, label="number of modes", c="green")
+    ax.set_yscale("log")
+    plt.legend()
+
+    # ------------------- plot losses -----------------
+
+    fig, ax = plt.subplots()
+    ax.plot(cb.metrics["epochs"], cb.metrics["train_loss"], label="train")
+    ax.plot(cb.metrics["epochs"], cb.metrics["val_loss"], label="validation")
+    ax.legend()
+    ax.set_ylabel("loss")
+    ax.set_xlabel("iteration")
+    ax.set_yscale("log")
 
     plt.show()
