@@ -1,11 +1,12 @@
 from jax import make_jaxpr, jit, grad, vmap, value_and_grad, jacfwd
-from jax.core import AvalMapHandlerPair
 import jax.numpy as jnp
 from jax.nn import softplus
 from jax import random
 import matplotlib.pyplot as plt
 import functools
 import jax
+from jax.experimental.optimizers import adam
+from tqdm import tqdm
 
 
 def initialize_mlp(sizes, key):
@@ -18,15 +19,15 @@ def initialize_mlp(sizes, key):
     return [initialize_layer(m, n, k) for m, n, k in zip(sizes[:-1], sizes[1:], keys)]
 
 
-def predict_pressure(parameters, x, y, α, μ):
-    activations = jnp.concatenate((x, y, α, μ))
+# def predict_pressure(parameters, x, y, α, μ):
+#     activations = jnp.concatenate((x, y, α, μ))
 
-    for w, b in parameters[:-1]:
-        activations = softplus(jnp.dot(w, activations) + b)
+#     for w, b in parameters[:-1]:
+#         activations = softplus(jnp.dot(w, activations) + b)
 
-    w, b = parameters[-1]
+#     w, b = parameters[-1]
 
-    return jnp.sum(jnp.dot(w, activations) + b)
+#     return jnp.sum(jnp.dot(w, activations) + b)
 
 
 def predict_func(parameters, x, y, α, μ):
@@ -70,6 +71,9 @@ if __name__ == "__main__":
     y_min = 0.0
     y_max = 1.0
 
+    n_training_steps = 100
+    learning_rate = 1e-3
+
     key = random.PRNGKey(1)
 
     layer_sizes = [4, 128, 1]
@@ -85,16 +89,29 @@ if __name__ == "__main__":
     pressures_and_spatial_derivatives = jit(
         vmap(predict_func, in_axes=(None, 0, 0, 0, 0), out_axes=0)
     )
-    #     out_axes=0,))
 
     # training
-    u, φx, φy, γx, γy = pressures_and_spatial_derivatives(
-        params,
-        jnp.ones((3, 1)) * 0.0,
-        jnp.ones((3, 1)) * 0.0,
-        jnp.ones((3, 1)) * 1.0,
-        jnp.ones((3, 1)) * 1.0,
-    )
+
+    # init_opt, update_opt, get_params = adam(step_size=1e-3)
+
+    opt = adam(learning_rate)
+    opt_state = opt.init(params)
+
+    opt_init, opt_update, get_params = adam(learning_rate)
+    opt_state = opt_init(params)
+
+    def loss_fn(params, x, y, α, μ):
+        u, φx, φy, γx, γy = predict_func(params, x, y, α, μ)
+        loss = jnp.linalg.norm(u, 1)  # TODO
+        return loss
+
+    def update(step, opt_state):
+        params = opt.get_params(opt_state)
+        loss = loss_fn(params, 0.0, 0.0, 1.0, 1.0)
+        return opt_state
+
+    for step in tqdm(range(n_training_steps)):
+        update(step, opt_state)
 
     # plotting
 
