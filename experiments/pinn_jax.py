@@ -1,11 +1,12 @@
 from jax import jit, vmap, value_and_grad, jacfwd
-from jax._src.numpy.lax_numpy import reshape
+from jax._src.numpy.lax_numpy import ones_like, reshape
 import jax.numpy as jnp
 from jax.nn import softplus
 from jax import random
 from jax.experimental.optimizers import adam
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+from jax.config import config
 
 
 def initialize_mlp(sizes, key):
@@ -22,7 +23,8 @@ def predict_func(parameters, x, y, α, μ):
 
     # forward pass through network
     def f(parameters, x, y, α, μ):
-        activations = jnp.concatenate((x, y, α, μ))
+        # activations = jnp.concatenate((x, y, α, μ))
+        activations = jnp.array((x, y, α, μ))
 
         for w, b in parameters[:-1]:
             activations = softplus(jnp.dot(w, activations) + b)
@@ -53,6 +55,8 @@ def predict_func(parameters, x, y, α, μ):
 
 if __name__ == "__main__":
 
+    config.update("jax_debug_nans", False)
+
     α = 1.0  # permeability
     μ = 1.0  # viscousity
     x_min = 0.0
@@ -62,7 +66,7 @@ if __name__ == "__main__":
     y_max = 1.0
     dy = 0.1
 
-    n_training_steps = 1
+    n_training_steps = 500000
     learning_rate = 1e-4
 
     key = random.PRNGKey(1)
@@ -80,15 +84,16 @@ if __name__ == "__main__":
     x_interior, y_interior = jnp.meshgrid(
         jnp.arange(x_min, x_max, dx), jnp.arange(y_min, y_max, dy)
     )
-    x_interior = x_interior.reshape(-1, 1)
-    y_interior = y_interior.reshape(-1, 1)
+    x_interior = x_interior.reshape(-1)
+    y_interior = y_interior.reshape(-1)
     α_train = jnp.ones_like(x_interior) * α
     μ_train = jnp.ones_like(x_interior) * μ
 
     # loss function
     def loss_interior(params, x, y, α, μ):
         u, φx, φy, γx, γy = predict_func(params, x, y, α, μ)
-        return jnp.linalg.norm(u - 1.0)
+        return (u - 5) ** 2
+        # return jnp.linalg.norm(u - 1.0)
 
     loss_interior_batched = vmap(
         loss_interior,
@@ -134,6 +139,12 @@ if __name__ == "__main__":
     )
     f = vmap(f, in_axes=(None, 0, 0, None, None))
 
-    u = f(params, x, y, α, μ)
+    z, *_ = f(params, x, y, α, μ)
+    # z = jnp.ones_like(x)
+    # im = ax.pcolormesh(x.reshape(-1), y.reshape(-1), z)
+    im = plt.imshow(z)
+    print(f"min {z.min()} max {z.max()}")
+
+    plt.colorbar(im)
 
     plt.show()
