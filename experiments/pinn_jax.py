@@ -48,9 +48,10 @@ def predict_func(parameters, x, y, α, μ):
     j = jacfwd(h, argnums=[1, 2])
 
     (ux, uy), (φx, φy), (γx, γy) = j(parameters, x, y, α, μ)
-    u = f(parameters, x, y, α, μ)
+    # u = f(parameters, x, y, α, μ)
+    u, φ, γ = h(parameters, x, y, α, μ)
 
-    return u, φx, φy, γx, γy
+    return u, φ, γ, φx, φy, γx, γy
 
 
 if __name__ == "__main__":
@@ -59,6 +60,7 @@ if __name__ == "__main__":
 
     α = 1.0  # permeability
     μ = 1.0  # viscousity
+    φ_inlet = 1.0  # flow velocity in x direction at inlet
     x_min = 0.0
     x_max = 1.0
     dx = 0.1
@@ -66,7 +68,7 @@ if __name__ == "__main__":
     y_max = 1.0
     dy = 0.1
 
-    n_training_steps = 500000
+    n_training_steps = 100000
     learning_rate = 1e-4
 
     key = random.PRNGKey(1)
@@ -80,30 +82,52 @@ if __name__ == "__main__":
     opt_state = opt_init(params)
 
     # training data
+    x_interior, y_interior = [
+        x.reshape(-1)
+        for x in jnp.meshgrid(
+            jnp.arange(x_min, x_max + dx, dx), jnp.arange(y_min, y_max + dy, dy)
+        )
+    ]
 
-    x_interior, y_interior = jnp.meshgrid(
-        jnp.arange(x_min, x_max, dx), jnp.arange(y_min, y_max, dy)
-    )
-    x_interior = x_interior.reshape(-1)
-    y_interior = y_interior.reshape(-1)
-    α_train = jnp.ones_like(x_interior) * α
-    μ_train = jnp.ones_like(x_interior) * μ
+    y_inlet = jnp.arange(y_min, y_max + dy, dy)
+    y_outlet = y_inlet
 
     # loss function
     def loss_interior(params, x, y, α, μ):
-        u, φx, φy, γx, γy = predict_func(params, x, y, α, μ)
-        return (u - 5) ** 2
+        u, φ, γ, φx, φy, γx, γy = predict_func(params, x, y, α, μ)
+        return (φx + γy) ** 2
         # return jnp.linalg.norm(u - 1.0)
+
+    def loss_inlet(params, y, α, μ):
+        u, φ, γ, φx, φy, γx, γy = predict_func(params, 0.0, y, α, μ)
+        return (φ - φ_inlet) ** 2
+
+    def loss_outlet(params, y, α, μ):
+        u, φ, γ, φx, φy, γx, γy = predict_func(params, x_max, y, α, μ)
+        return (u - 0) ** 2
 
     loss_interior_batched = vmap(
         loss_interior,
-        in_axes=(None, 0, 0, 0, 0),
+        in_axes=(None, 0, 0, None, None),
+        out_axes=0,
+    )
+    loss_inlet_batched = vmap(
+        loss_inlet,
+        in_axes=(None, 0, None, None),
+        out_axes=0,
+    )
+    loss_outlet_batched = vmap(
+        loss_outlet,
+        in_axes=(None, 0, None, None),
         out_axes=0,
     )
 
     def loss(params):
-        value = loss_interior_batched(params, x_interior, y_interior, α_train, μ_train)
-        return jnp.sum(value)
+        l1 = loss_interior_batched(params, x_interior, y_interior, α, μ)
+        l2 = loss_inlet_batched(params, y_inlet, α, μ)
+        l3 = loss_outlet_batched(params, y_outlet, α, μ)
+
+        return jnp.sum(l1) + jnp.sum(l2) + jnp.sum(l3)
 
     # training loop
     @jit
@@ -129,7 +153,9 @@ if __name__ == "__main__":
     ax.set_yscale("log")
 
     fig, ax = plt.subplots()
-    x, y = jnp.meshgrid(jnp.arange(x_min, x_max, dx), jnp.arange(y_min, y_max, dy))
+    x, y = jnp.meshgrid(
+        jnp.arange(x_min, x_max + dx, dx), jnp.arange(y_min, y_max + dy, dy)
+    )
     α = 1.0
     μ = 1.0
 
@@ -137,14 +163,20 @@ if __name__ == "__main__":
         predict_func,
         in_axes=(None, 0, 0, None, None),
     )
-    f = vmap(f, in_axes=(None, 0, 0, None, None))
+    f = jit(vmap(f, in_axes=(None, 0, 0, None, None)))
 
-    z, *_ = f(params, x, y, α, μ)
-    # z = jnp.ones_like(x)
-    # im = ax.pcolormesh(x.reshape(-1), y.reshape(-1), z)
-    im = plt.imshow(z)
-    print(f"min {z.min()} max {z.max()}")
+    u, φ, γ, φx, φy, γx, γy = f(params, x, y, α, μ)
 
+    im = ax.contourf(x, y, u)
+    ax.streamplot(x, y, φ, γ, color="red")
+    ax.scatter(x_interior, y_interior, label="interior")
+    ax.scatter(jnp.zeros_like(y_inlet), y_inlet, label="inlet")
+    ax.scatter(jnp.ones_like(y_inlet) * x_max, y_outlet, label="outlet")
+    ax.legend()
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(y_min, y_max)
     plt.colorbar(im)
 
     plt.show()
