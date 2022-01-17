@@ -1,5 +1,5 @@
+import numpy as np
 from jax import jit, vmap, value_and_grad, jacfwd
-from jax._src.numpy.lax_numpy import ones_like, reshape
 import jax.numpy as jnp
 from jax.nn import softplus
 from jax import random
@@ -71,7 +71,7 @@ if __name__ == "__main__":
     y_min = 0.0  # start of domain in y direction
     y_max = y_min + n_blocks_y * block_width  # end of domain in y direction
 
-    n_training_steps = 1000
+    n_training_steps = 100000
     learning_rate = 1e-4
 
     key = random.PRNGKey(1)
@@ -85,28 +85,25 @@ if __name__ == "__main__":
     opt_state = opt_init(params)
 
     # training data
-    X = []
-    Y = []
-    A = []
-    for i in range(n_blocks_x):
-        for j in range(n_blocks_y):
-            x, y = jnp.meshgrid(
-                jnp.arange(i * block_width, i * block_width + block_width, dx),
-                jnp.arange(j * block_width, j * block_width + block_width, dy),
-            )
-            # A.append(n_blocks_x * n_blocks_y + 1)
-            A.append(1.0)
-            X.append(x)
-            Y.append(y)
-    X = jnp.stack(X)
-    Y = jnp.stack(Y)
-    A = jnp.stack(A)
+    A = jnp.ones((3, 3))
+    A = A.at[1, 1].set(0.005)
 
-    α_inlets = A[inlet_block_idx]
-    y_inlets = Y[inlet_block_idx, 0]
+    X, Y = jnp.meshgrid(
+        jnp.arange(x_min, x_max + dx, dx), jnp.arange(y_min, y_max + dy, dy)
+    )
 
-    α_outlets = A[outlet_block_idx]
-    y_outlets = Y[outlet_block_idx, -1]
+    def permeablity(x, y):
+        x_idx = jnp.floor_divide(x, block_width).astype(int)
+        y_idx = jnp.floor_divide(y, block_width).astype(int)
+        return A[x_idx, y_idx]
+
+    α = vmap(vmap(permeablity, (0, 0), 0), (1, 1), 1)(X, Y)
+
+    y_inlets = jnp.arange(block_width, 2 * block_width + dy, dy)
+    α_inlets = vmap(permeablity, (0, 0), 0)(jnp.zeros_like(y_inlets), y_inlets)
+
+    y_outlets = jnp.arange(y_min, y_max + dy, dy)
+    α_outlets = vmap(permeablity, (0, 0), 0)(jnp.zeros_like(y_outlets), y_outlets)
 
     # loss function
     def loss_interior(params, x, y, α, μ):
@@ -121,34 +118,16 @@ if __name__ == "__main__":
         u, _, _, _, _, _, _ = predict_func(params, x_max, y, α, μ)
         return (u - 0) ** 2
 
-    # loss_interior_batched = vmap(
-    #     loss_interior,
-    #     (None, 0, 0, 0, None),
-    # )
-    # loss_interior_batched = vmap(
-    #     loss_interior_batched,
-    #     (None, 1, 1, None, None),
-    # )
-    # loss_interior_batched = vmap(
-    #     loss_interior_batched,
-    #     (None, 2, 2, None, None),
-    # )
-
     loss_interior_batched = vmap(loss_interior, (None, 0, 0, 0, None), 0)
-    loss_interior_batched = vmap(loss_interior_batched, (None, 1, 1, None, None), 1)
-    loss_interior_batched = vmap(loss_interior_batched, (None, 2, 2, None, None), 2)
+    loss_interior_batched = vmap(loss_interior_batched, (None, 1, 1, 1, None), 1)
 
     loss_inlet_batched = vmap(loss_inlet, (None, 0, 0, None), 0)
-    loss_inlet_batched = vmap(loss_inlet_batched, (None, 1, None, None), 1)
 
     loss_outlet_batched = vmap(loss_outlet, (None, 0, 0, None), 0)
-    loss_outlet_batched = vmap(loss_outlet_batched, (None, 1, None, None), 1)
 
     def loss(params):
 
-        losses = []
-
-        l1 = loss_interior_batched(params, X, Y, A, μ)
+        l1 = loss_interior_batched(params, X, Y, α, μ)
 
         l2 = loss_inlet_batched(params, y_inlets, α_inlets, μ)
 
@@ -179,42 +158,37 @@ if __name__ == "__main__":
     ax.set_ylabel("loss")
     ax.set_yscale("log")
 
-    fig, ax = plt.subplots()
-    μ = 1.0
+    X, Y = np.meshgrid(
+        np.arange(x_min, x_max + dx * 0.01, dx * 0.01),
+        np.arange(y_min, y_max + dy * 0.01, dy * 0.01),
+    )
+    α = vmap(vmap(permeablity, (0, 0), 0), (1, 1), 1)(X, Y)
 
     f = vmap(predict_func, (None, 0, 0, 0, None))
-    f = vmap(f, (None, 1, 1, None, None), 1)
-    f = vmap(f, (None, 2, 2, None, None), 2)
+    f = vmap(f, (None, 1, 1, 1, None), 1)
+    u, φ, γ, φx, φy, γx, γy = f(params, X, Y, α, μ)
 
-    u, φ, γ, φx, φy, γx, γy = f(params, X, Y, A, μ)
+    # pressure map
+    fig, ax = plt.subplots()
 
-    # X = (
-    #     X.reshape(n_blocks_x, n_blocks_y, X.shape[1], X.shape[2])
-    #     .transpose(0, 2, 1, 3)
-    #     .reshape(n_blocks_x * X.shape[1], n_blocks_y * X.shape[2])
-    # )
-    # Y = (
-    #     Y.reshape(n_blocks_x, n_blocks_y, Y.shape[1], Y.shape[2])
-    #     .transpose(0, 2, 1, 3)
-    #     .reshape(n_blocks_x * Y.shape[1], n_blocks_y * Y.shape[2])
-    # )
-    # u = (
-    #     u.reshape(n_blocks_x, n_blocks_y, u.shape[1], u.shape[2])
-    #     .transpose(0, 2, 1, 3)
-    #     .reshape(n_blocks_x * u.shape[1], n_blocks_y * u.shape[2])
-    # )
-
-    im = ax.contourf(X[0], Y[0], u[0])
-    im = ax.contourf(X[1], Y[1], u[1])
-    # ax.streamplot(x, y, φ, γ, color="red")
-    ax.scatter(X, Y, label="interior")
-    # ax.scatter(jnp.zeros_like(y_inlets), y_inlets, label="inlet")
-    # ax.scatter(jnp.ones_like(y_inlets) * x_max, y_outlets, label="outlet")
-    ax.legend()
+    im = ax.contourf(X, Y, u, levels=100)
+    ax.streamplot(X, Y, φ, γ, color="red")
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     ax.set_xlim(x_min, x_max)
     ax.set_ylim(y_min, y_max)
-    # plt.colorbar(im)
+    plt.colorbar(im)
+
+    # velocity map
+    fig, ax = plt.subplots()
+
+    speed = np.sqrt(φ ** 2 + γ ** 2)
+
+    im = ax.contourf(X, Y, speed, levels=100)
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(y_min, y_max)
+    plt.colorbar(im)
 
     plt.show()

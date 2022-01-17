@@ -8,6 +8,7 @@ from jax.experimental.optimizers import adam
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from jax.config import config
+import numpy as np
 
 
 def initialize_mlp(sizes, key):
@@ -87,7 +88,9 @@ if __name__ == "__main__":
     opt_state = opt_init(params)
 
     # training data
-    A = jnp.arange(1, 10)
+    A = jnp.ones((3, 3))
+    A = A.at[1, 1].set(0.0)
+
     X, Y = jnp.meshgrid(
         jnp.arange(x_min, x_max + dx, dx), jnp.arange(y_min, y_max + dy, dy)
     )
@@ -100,13 +103,13 @@ if __name__ == "__main__":
 
     def permeablity(x, y):
         idx = get_block_idx(x, y)
-        return A[idx]
+        return A.reshape(-1)[idx]
 
     def is_inlet(x, y):
         idx = get_block_idx(x, y)
-        c1 = lax.cond(idx == inlet_block_idx, lambda _: 1, lambda _: 0, None)
-        c2 = lax.cond(x == 0.0, lambda _: 1, lambda _: 0, None)
-        return c1 * c2 != 0
+        c1 = lax.cond(idx == inlet_block_idx, lambda _: True, lambda _: False, None)
+        c2 = lax.cond(x == 0.0, lambda _: True, lambda _: False, None)
+        return jnp.logical_and(c1, c2)
 
     def is_outlet(x, x_end):
         return lax.cond(x == x_end, lambda _: True, lambda _: False, None)
@@ -165,9 +168,13 @@ if __name__ == "__main__":
 
     fig, ax = plt.subplots()
 
+    X, Y = np.meshgrid(
+        np.arange(x_min, x_max + dx * 0.01, dx * 0.01),
+        np.arange(y_min, y_max + dy * 0.01, dy * 0.01),
+    )
     α = vmap(vmap(permeablity, (0, 0), 0), (1, 1), 1)(X, Y)
 
-    f = vmap(predict_func, (None, 0, 0, 0, None), 0)
+    f = vmap(predict_func, (None, 0, 0, 0, None))
     f = vmap(f, (None, 1, 1, 1, None), 1)
 
     u, φ, γ, φx, φy, γx, γy = f(params, X, Y, α, μ)
@@ -188,17 +195,16 @@ if __name__ == "__main__":
     #     .reshape(n_blocks_x * u.shape[1], n_blocks_y * u.shape[2])
     # )
 
-    im = ax.contourf(X, Y, u)
-    im = ax.contourf(X, Y, u)
+    im = ax.contourf(X, Y, u, levels=100)
     ax.streamplot(X, Y, φ, γ, color="red")
-    ax.scatter(X, Y, label="interior")
-    # ax.scatter(jnp.zeros_like(y_inlets), y_inlets, label="inlet")
-    # ax.scatter(jnp.ones_like(y_inlets) * x_max, y_outlets, label="outlet")
-    ax.legend()
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
+    # ax.scatter(X, Y, label="interior")
+    # # ax.scatter(jnp.zeros_like(y_inlets), y_inlets, label="inlet")
+    # # ax.scatter(jnp.ones_like(y_inlets) * x_max, y_outlets, label="outlet")
+    # ax.legend()
+    # ax.set_xlabel("x")
+    # ax.set_ylabel("y")
     ax.set_xlim(x_min, x_max)
     ax.set_ylim(y_min, y_max)
-    # plt.colorbar(im)
+    plt.colorbar(im)
 
     plt.show()
