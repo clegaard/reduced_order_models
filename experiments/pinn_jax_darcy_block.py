@@ -159,8 +159,8 @@ if __name__ == "__main__":
     ax.set_yscale("log")
 
     X, Y = np.meshgrid(
-        np.arange(x_min, x_max + dx * 0.01, dx * 0.01),
-        np.arange(y_min, y_max + dy * 0.01, dy * 0.01),
+        np.arange(x_min, x_max + 0.1, dx * 0.1),
+        np.arange(y_min, y_max + dy * 0.1, dy * 0.1),
     )
     α = vmap(vmap(permeablity, (0, 0), 0), (1, 1), 1)(X, Y)
 
@@ -169,10 +169,21 @@ if __name__ == "__main__":
     u, φ, γ, φx, φy, γx, γy = f(params, X, Y, α, μ)
 
     # pressure map
-    fig, ax = plt.subplots()
+    # fig, ax = plt.subplots()
+    # speed = speed = np.sqrt(φ ** 2 + γ ** 2)
+    # lw = 1 * speed / speed.max()
+    # im = ax.contourf(X, Y, u, levels=100)
+    # ax.streamplot(X, Y, φ, γ, color="red", linewidth=lw)
+    # ax.set_xlabel("x")
+    # ax.set_ylabel("y")
+    # ax.set_xlim(x_min, x_max)
+    # ax.set_ylim(y_min, y_max)
+    # plt.colorbar(im)
 
+    # pressure map (quiver)
+    fig, ax = plt.subplots()
     im = ax.contourf(X, Y, u, levels=100)
-    ax.streamplot(X, Y, φ, γ, color="red")
+    ax.quiver(X, Y, φ, γ, color="red", scale_units="xy", angles="xy")
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     ax.set_xlim(x_min, x_max)
