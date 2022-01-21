@@ -5,6 +5,8 @@ from jax.nn import softplus
 from jax import random
 from jax.experimental.optimizers import adam
 from tqdm import tqdm
+from matplotlib.ticker import LinearLocator
+from matplotlib import cm
 import matplotlib.pyplot as plt
 from jax.config import config
 
@@ -22,9 +24,9 @@ def initialize_mlp(sizes, key):
 def predict_func(parameters, x, y, α, μ):
 
     # forward pass through network
-    def f(parameters, x, y, α, μ):
+    def f(parameters, x, y):
         # activations = jnp.concatenate((x, y, α, μ))
-        activations = jnp.array((x, y, α, μ))
+        activations = jnp.array((x, y))  # TODO we don't α here
 
         for w, b in parameters[:-1]:
             activations = softplus(jnp.dot(w, activations) + b)
@@ -38,7 +40,7 @@ def predict_func(parameters, x, y, α, μ):
 
     # velocity using darcys law
     def h(parameters, x, y, α, μ):
-        u, (ux, uy) = g(parameters, x, y, α, μ)
+        u, (ux, uy) = g(parameters, x, y)
         φ = -α / μ * ux  # velocity in x direction
         γ = -α / μ * uy  # velocity in y direction
         return u, φ, γ
@@ -53,16 +55,19 @@ def predict_func(parameters, x, y, α, μ):
     return u, φ, γ, φx, φy, γx, γy
 
 
+# constrain a1 and a7 to have 0 velocity
+
 if __name__ == "__main__":
 
     config.update("jax_debug_nans", False)
 
     μ = 1.0  # viscosity
     φ_inlet = 1.0  # flow velocity in x direction at inlet
-    inlet_block_idx = jnp.asarray([3])  # index(s) of block where liquid is injected
-    outlet_block_idx = jnp.asarray([2, 5, 8])  # index(s) of blocks that are outlets
-    dx = 0.1
-    dy = 0.1
+    u_outlet = 0.0  # pressure at outlet
+    # inlet_block_idx = jnp.asarray([3])  # index(s) of block where liquid is injected
+    # outlet_block_idx = jnp.asarray([2, 5, 8])  # index(s) of blocks that are outlets
+    dx = 0.01
+    dy = 0.01
     n_blocks_x = 3
     n_blocks_y = 3
     block_width = 1 / 3
@@ -71,13 +76,13 @@ if __name__ == "__main__":
     y_min = 0.0  # start of domain in y direction
     y_max = y_min + n_blocks_y * block_width  # end of domain in y direction
 
-    n_training_steps = 100000
+    n_training_steps = 10000
     learning_rate = 1e-4
 
     key = random.PRNGKey(1)
 
     # construct network
-    layer_sizes = [4, 32, 1]
+    layer_sizes = [2, 32, 1]
     params = initialize_mlp(layer_sizes, key)
 
     # training
@@ -86,7 +91,7 @@ if __name__ == "__main__":
 
     # training data
     A = jnp.ones((3, 3))
-    A = A.at[1, 1].set(0.005)
+    A = A.at[1, 1].set(0.5)
 
     X, Y = jnp.meshgrid(
         jnp.arange(x_min, x_max + dx, dx), jnp.arange(y_min, y_max + dy, dy)
@@ -111,12 +116,12 @@ if __name__ == "__main__":
         return (φx + γy) ** 2
 
     def loss_inlet(params, y, α, μ):
-        _, φ, _, _, _, _, _ = predict_func(params, 0.0, y, α, μ)
+        _, φ, _, _, _, _, _ = predict_func(params, x_min, y, α, μ)
         return (φ - φ_inlet) ** 2
 
     def loss_outlet(params, y, α, μ):
         u, _, _, _, _, _, _ = predict_func(params, x_max, y, α, μ)
-        return (u - 0) ** 2
+        return (u - u_outlet) ** 2
 
     loss_interior_batched = vmap(loss_interior, (None, 0, 0, 0, None), 0)
     loss_interior_batched = vmap(loss_interior_batched, (None, 1, 1, 1, None), 1)
@@ -158,15 +163,28 @@ if __name__ == "__main__":
     ax.set_ylabel("loss")
     ax.set_yscale("log")
 
-    X, Y = np.meshgrid(
-        np.arange(x_min, x_max + 0.1, dx * 0.1),
-        np.arange(y_min, y_max + dy * 0.1, dy * 0.1),
+    dx = 0.001
+    dy = 0.001
+    X_eval, Y_eval = np.meshgrid(
+        np.arange(x_min, x_max + dx, dx),
+        np.arange(y_min, y_max + dy, dy),
     )
-    α = vmap(vmap(permeablity, (0, 0), 0), (1, 1), 1)(X, Y)
+    α = vmap(vmap(permeablity, (0, 0), 0), (1, 1), 1)(X_eval, Y_eval)
 
     f = vmap(predict_func, (None, 0, 0, 0, None))
     f = vmap(f, (None, 1, 1, 1, None), 1)
-    u, φ, γ, φx, φy, γx, γy = f(params, X, Y, α, μ)
+    u, φ, γ, φx, φy, γx, γy = f(params, X_eval, Y_eval, α, μ)
+
+    # permeablity map
+    fig, ax = plt.subplots()
+    im = ax.contourf(X_eval, Y_eval, α, levels=100)
+    ax.scatter(X, Y, marker="x")
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(y_min, y_max)
+    ax.set_title("permeablity")
+    plt.colorbar(im)
 
     # pressure map
     # fig, ax = plt.subplots()
@@ -182,20 +200,42 @@ if __name__ == "__main__":
 
     # pressure map (quiver)
     fig, ax = plt.subplots()
-    im = ax.contourf(X, Y, u, levels=100)
-    ax.quiver(X, Y, φ, γ, color="red", scale_units="xy", angles="xy")
+    im = ax.contourf(X_eval, Y_eval, u, levels=100)
+    # ax.quiver(X, Y, φ, γ, color="red", scale_units="xy", angles="xy")
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     ax.set_xlim(x_min, x_max)
     ax.set_ylim(y_min, y_max)
     plt.colorbar(im)
 
+    # heightmap pressure
+    fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
+    surf = ax.plot_surface(
+        X_eval, Y_eval, u, cmap=cm.coolwarm, linewidth=0, antialiased=False
+    )
+    ax.set_zlim(u.min(), u.max())
+    ax.zaxis.set_major_locator(LinearLocator(10))
+    ax.zaxis.set_major_formatter("{x:.02f}")
+    fig.colorbar(surf, shrink=0.5, aspect=5)
+
+    # heightmap divergence
+    div = loss_interior_batched(params, X_eval, Y_eval, α, μ)
+    fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
+    surf = ax.plot_surface(
+        X_eval, Y_eval, div, cmap=cm.coolwarm, linewidth=0, antialiased=False
+    )
+    ax.set_zlim(u.min(), u.max())
+    ax.zaxis.set_major_locator(LinearLocator(10))
+    ax.zaxis.set_major_formatter("{x:.02f}")
+    fig.colorbar(surf, shrink=0.5, aspect=5)
+    ax.set_title("divergence")
+
     # velocity map
     fig, ax = plt.subplots()
 
     speed = np.sqrt(φ ** 2 + γ ** 2)
 
-    im = ax.contourf(X, Y, speed, levels=100)
+    im = ax.contourf(X_eval, Y_eval, speed, levels=100)
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     ax.set_xlim(x_min, x_max)

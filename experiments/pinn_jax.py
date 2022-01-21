@@ -44,11 +44,10 @@ def predict_func(parameters, x, y, α, μ):
         return u, φ, γ
 
     # derivative of velocity
-    # possible use of https://github.com/kach/jax.value_and_jacfwd/blob/main/value_and_jacfwd.py
     j = jacfwd(h, argnums=[1, 2])
 
     (ux, uy), (φx, φy), (γx, γy) = j(parameters, x, y, α, μ)
-    # u = f(parameters, x, y, α, μ)
+    # can possible be optimized by using https://github.com/kach/jax.value_and_jacfwd/blob/main/value_and_jacfwd.py
     u, φ, γ = h(parameters, x, y, α, μ)
 
     return u, φ, γ, φx, φy, γx, γy
@@ -96,7 +95,6 @@ if __name__ == "__main__":
     def loss_interior(params, x, y, α, μ):
         u, φ, γ, φx, φy, γx, γy = predict_func(params, x, y, α, μ)
         return (φx + γy) ** 2
-        # return jnp.linalg.norm(u - 1.0)
 
     def loss_inlet(params, y, α, μ):
         u, φ, γ, φx, φy, γx, γy = predict_func(params, 0.0, y, α, μ)
