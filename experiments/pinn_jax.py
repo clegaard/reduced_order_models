@@ -1,12 +1,11 @@
-from jax import jit, vmap, value_and_grad, jacfwd
-from jax._src.numpy.lax_numpy import ones_like, reshape
 import jax.numpy as jnp
-from jax.nn import softplus
-from jax import random
-from jax.experimental.optimizers import adam
-from tqdm import tqdm
 import matplotlib.pyplot as plt
+import numpy as np
+from jax import jacfwd, jit, random, value_and_grad, vmap
 from jax.config import config
+from jax.example_libraries.optimizers import adam
+from jax.nn import softplus
+from tqdm import tqdm
 
 
 def initialize_mlp(sizes, key):
@@ -20,7 +19,6 @@ def initialize_mlp(sizes, key):
 
 
 def predict_func(parameters, x, y, α, μ):
-
     # forward pass through network
     def f(parameters, x, y, α, μ):
         # activations = jnp.concatenate((x, y, α, μ))
@@ -54,7 +52,6 @@ def predict_func(parameters, x, y, α, μ):
 
 
 if __name__ == "__main__":
-
     config.update("jax_debug_nans", False)
 
     α = 1.0  # permeability
@@ -138,7 +135,6 @@ if __name__ == "__main__":
     losses = []
 
     for step in tqdm(range(n_training_steps), desc="training iteration"):
-
         params, opt_state, value = update(step, params, opt_state)
 
         losses.append(value)
@@ -164,6 +160,11 @@ if __name__ == "__main__":
     f = jit(vmap(f, in_axes=(None, 0, 0, None, None)))
 
     u, φ, γ, φx, φy, γx, γy = f(params, x, y, α, μ)
+
+    x = np.array(x)
+    y = np.array(y)
+    φ = np.array(φ)
+    γ = np.array(γ)
 
     im = ax.contourf(x, y, u)
     ax.streamplot(x, y, φ, γ, color="red")

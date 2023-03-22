@@ -4,7 +4,7 @@ import jax.numpy as jnp
 from jax.nn import softplus
 from jax import random
 from jax import lax
-from jax.experimental.optimizers import adam
+from jax.example_libraries.optimizers import adam
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from jax.config import config
@@ -22,7 +22,6 @@ def initialize_mlp(sizes, key):
 
 
 def predict_func(parameters, x, y, α, μ):
-
     # forward pass through network
     def f(parameters, x, y, α, μ):
         # activations = jnp.concatenate((x, y, α, μ))
@@ -56,7 +55,6 @@ def predict_func(parameters, x, y, α, μ):
 
 
 if __name__ == "__main__":
-
     config.update("jax_debug_nans", True)
 
     μ = 1.0  # viscosity
@@ -142,7 +140,6 @@ if __name__ == "__main__":
 
     @jit
     def update(step, params, opt_state):
-
         f = lambda params, x, y: jnp.sum(loss_batched(params, x, y))
 
         value, grads = value_and_grad(f)(params, X, Y)
@@ -154,7 +151,6 @@ if __name__ == "__main__":
     losses = []
 
     for step in tqdm(range(n_training_steps), desc="training iteration"):
-
         params, opt_state, value = update(step, params, opt_state)
 
         losses.append(value)

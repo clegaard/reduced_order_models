@@ -3,7 +3,7 @@ from jax import jit, vmap, value_and_grad, jacfwd
 import jax.numpy as jnp
 from jax.nn import softplus
 from jax import random
-from jax.experimental.optimizers import adam
+from jax.example_libraries.optimizers import adam
 from tqdm import tqdm
 from matplotlib.ticker import LinearLocator
 from matplotlib import cm
